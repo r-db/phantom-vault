@@ -211,17 +211,10 @@ impl McpServer {
             .cloned()
             .unwrap_or_else(|| json!({}));
 
-        let args: ToolCallArgs = match serde_json::from_value(json!({ "args": arguments })) {
-            Ok(a) => ToolCallArgs {
-                args: arguments.as_object().cloned().unwrap_or_default(),
-            },
-            Err(e) => {
-                return JsonRpcResponse::error(
-                    id,
-                    error_codes::INVALID_PARAMS,
-                    format!("Invalid arguments: {}", e),
-                );
-            }
+        let args = ToolCallArgs {
+            args: arguments.as_object()
+                .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default(),
         };
 
         // Check if vault is unlocked (for most tools)
