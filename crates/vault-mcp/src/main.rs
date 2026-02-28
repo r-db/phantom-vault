@@ -9,6 +9,43 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use vault_core::storage::default_vault_dir;
 use vault_mcp::{create_shared_state, run_server};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Handle command-line arguments
+fn handle_args() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+
+    for arg in &args[1..] {
+        match arg.as_str() {
+            "--version" | "-V" => {
+                println!("phantom-vault {}", VERSION);
+                return true;
+            }
+            "--help" | "-h" => {
+                println!("Phantom Vault - MCP Server");
+                println!("The API key vault where secrets are used but never seen.");
+                println!();
+                println!("USAGE:");
+                println!("    phantom [OPTIONS]");
+                println!();
+                println!("OPTIONS:");
+                println!("    -h, --help       Print help information");
+                println!("    -V, --version    Print version information");
+                println!();
+                println!("ENVIRONMENT:");
+                println!("    VAULT_DIR        Override default vault directory");
+                println!("    VAULT_PASSWORD   Auto-unlock vault (development only)");
+                println!();
+                println!("This binary is meant to be run as an MCP server by Claude Code.");
+                println!("For interactive usage, see: phantom --help");
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Initialize logging
 fn init_logging() {
     // Log to stderr (stdout is used for MCP protocol)
@@ -28,6 +65,11 @@ fn init_logging() {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Handle --version and --help before anything else
+    if handle_args() {
+        return Ok(());
+    }
+
     init_logging();
 
     info!("Vault MCP Server starting...");
