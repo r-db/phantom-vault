@@ -1,0 +1,14 @@
+[package]
+name = "phantom-cli"
+version = "1.0.0"
+edition = "2021"
+description = "Phantom Vault CLI - secure secret management for AI agents"
+authors = ["Riscent"]
+license = "Apache-2.0"
+
+[[bin]]
+name = "phantom"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }

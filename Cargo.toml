@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/phantom-cli",
     "crates/vault-core",
     "crates/vault-mcp",
     "crates/vault-tauri",
