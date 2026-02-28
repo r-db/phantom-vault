@@ -1,0 +1,45 @@
+name: vault_secrets
+description: Secure credential management for LLM tools
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management
+  provider: ^6.1.1
+
+  # Routing
+  go_router: ^13.0.0
+
+  # Secure storage (for mobile keychain/keystore)
+  flutter_secure_storage: ^9.0.0
+
+  # UI components
+  cupertino_icons: ^1.0.6
+
+  # Utilities
+  intl: ^0.19.0
+  uuid: ^4.2.1
+
+  # Icons
+  material_symbols_icons: ^4.2719.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.1
+
+flutter:
+  uses-material-design: true
+
+  fonts:
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-Regular.ttf
+        - asset: assets/fonts/JetBrainsMono-Bold.ttf
+          weight: 700

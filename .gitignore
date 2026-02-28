@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+
+# Test artifacts
+*.profraw
+*.profdata
+
+# Release binaries (keep in releases, not in repo)
+phantom-*-apple-darwin
+phantom-*-linux-gnu
