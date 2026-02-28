@@ -35,5 +35,8 @@ chrono = { workspace = true }
 # TTY detection
 atty = "0.2"
 
+# TOML parsing for policy files
+toml = { workspace = true }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.11"

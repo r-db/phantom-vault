@@ -130,6 +130,10 @@ pub struct SecretEntry {
 
     /// Auto-inject when matching tool is called
     pub auto_inject: bool,
+
+    /// Namespace for organization (e.g., "work", "personal")
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 impl SecretEntry {
@@ -152,6 +156,7 @@ impl SecretEntry {
             last_used_at: None,
             allowed_tools: Vec::new(),
             auto_inject: true,
+            namespace: None,
         }
     }
 
@@ -227,6 +232,10 @@ pub struct VaultData {
 
     /// Tool-to-credential bindings
     pub tool_bindings: HashMap<String, ToolBinding>,
+
+    /// Canary (honeypot) secrets for detecting exfiltration
+    #[serde(default)]
+    pub canaries: Vec<CanarySecret>,
 }
 
 impl VaultData {
@@ -247,6 +256,35 @@ impl VaultData {
     /// Check if reference exists
     pub fn reference_exists(&self, reference: &str) -> bool {
         self.entries.iter().any(|e| e.reference == reference)
+    }
+
+    /// List all unique namespaces
+    pub fn list_namespaces(&self) -> Vec<String> {
+        let mut namespaces: Vec<String> = self
+            .entries
+            .iter()
+            .filter_map(|e| e.namespace.clone())
+            .collect();
+        namespaces.sort();
+        namespaces.dedup();
+        namespaces
+    }
+
+    /// Filter entries by namespace (None = show all)
+    pub fn filter_by_namespace(&self, namespace: Option<&str>) -> Vec<&SecretEntry> {
+        match namespace {
+            None => self.entries.iter().collect(),
+            Some(ns) => self
+                .entries
+                .iter()
+                .filter(|e| e.namespace.as_deref() == Some(ns))
+                .collect(),
+        }
+    }
+
+    /// Count entries in a namespace
+    pub fn count_in_namespace(&self, namespace: Option<&str>) -> usize {
+        self.filter_by_namespace(namespace).len()
     }
 }
 
@@ -280,6 +318,255 @@ pub struct SecretReference {
     pub field_path: Option<String>,
 }
 
+/// Canary (honeypot) secret for detecting exfiltration attempts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanarySecret {
+    /// Unique identifier
+    pub id: Uuid,
+
+    /// Human-readable name
+    pub name: String,
+
+    /// Pattern type used to generate the canary
+    pub pattern: CanaryPattern,
+
+    /// The generated fake credential value
+    pub value: String,
+
+    /// When the canary was created
+    pub created_at: DateTime<Utc>,
+
+    /// Number of times this canary was detected in output
+    pub alert_count: u32,
+
+    /// Last time an alert was triggered
+    pub last_alert_at: Option<DateTime<Utc>>,
+}
+
+impl CanarySecret {
+    /// Create a new canary with a generated value
+    pub fn new(name: String, pattern: CanaryPattern) -> Self {
+        let value = pattern.generate();
+        Self {
+            id: Uuid::new_v4(),
+            name,
+            pattern,
+            value,
+            created_at: Utc::now(),
+            alert_count: 0,
+            last_alert_at: None,
+        }
+    }
+
+    /// Record an alert (canary detected in output)
+    pub fn record_alert(&mut self) {
+        self.alert_count += 1;
+        self.last_alert_at = Some(Utc::now());
+    }
+}
+
+/// Pattern types for generating realistic-looking fake credentials
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum CanaryPattern {
+    /// AWS Access Key format (AKIA...)
+    AwsAccessKey,
+    /// Stripe API key format (sk_test_...)
+    StripeKey,
+    /// GitHub personal access token (ghp_...)
+    GitHubToken,
+    /// Generic API key with custom format
+    Custom {
+        prefix: String,
+        length: usize,
+    },
+}
+
+impl CanaryPattern {
+    /// Generate a realistic-looking fake credential
+    pub fn generate(&self) -> String {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+
+        match self {
+            CanaryPattern::AwsAccessKey => {
+                // AWS Access Key: AKIA + 16 alphanumeric chars
+                let suffix: String = (0..16)
+                    .map(|_| {
+                        let chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                        chars.chars().nth(rng.gen_range(0..chars.len())).unwrap()
+                    })
+                    .collect();
+                format!("AKIA{}", suffix)
+            }
+            CanaryPattern::StripeKey => {
+                // Stripe test key: sk_test_ + 24 alphanumeric chars
+                let suffix: String = (0..24)
+                    .map(|_| {
+                        let chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                        chars.chars().nth(rng.gen_range(0..chars.len())).unwrap()
+                    })
+                    .collect();
+                format!("sk_test_{}", suffix)
+            }
+            CanaryPattern::GitHubToken => {
+                // GitHub PAT: ghp_ + 36 alphanumeric chars
+                let suffix: String = (0..36)
+                    .map(|_| {
+                        let chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                        chars.chars().nth(rng.gen_range(0..chars.len())).unwrap()
+                    })
+                    .collect();
+                format!("ghp_{}", suffix)
+            }
+            CanaryPattern::Custom { prefix, length } => {
+                let suffix: String = (0..*length)
+                    .map(|_| {
+                        let chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                        chars.chars().nth(rng.gen_range(0..chars.len())).unwrap()
+                    })
+                    .collect();
+                format!("{}{}", prefix, suffix)
+            }
+        }
+    }
+
+    /// Get pattern name for display
+    pub fn name(&self) -> &str {
+        match self {
+            CanaryPattern::AwsAccessKey => "aws",
+            CanaryPattern::StripeKey => "stripe",
+            CanaryPattern::GitHubToken => "github",
+            CanaryPattern::Custom { .. } => "custom",
+        }
+    }
+}
+
+impl std::str::FromStr for CanaryPattern {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "aws" | "aws-access-key" => Ok(CanaryPattern::AwsAccessKey),
+            "stripe" | "stripe-key" => Ok(CanaryPattern::StripeKey),
+            "github" | "github-token" => Ok(CanaryPattern::GitHubToken),
+            _ => Err(format!("Unknown pattern '{}'. Use: aws, stripe, or github", s)),
+        }
+    }
+}
+
+/// Security policy for controlling secret access
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SecurityPolicy {
+    /// Allowed tools (empty = all allowed)
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+
+    /// Blocked tools (takes precedence over allowed)
+    #[serde(default)]
+    pub blocked_tools: Vec<String>,
+
+    /// Tools that require explicit confirmation
+    #[serde(default)]
+    pub require_confirmation: Vec<String>,
+
+    /// Maximum secret accesses per hour (None = unlimited)
+    #[serde(default)]
+    pub rate_limit: Option<u32>,
+
+    /// Time-based access restrictions
+    #[serde(default)]
+    pub time_restrictions: Option<TimeRestriction>,
+}
+
+impl Default for SecurityPolicy {
+    fn default() -> Self {
+        Self {
+            allowed_tools: vec![],
+            blocked_tools: vec![],
+            require_confirmation: vec!["shell_exec".to_string()],
+            rate_limit: None,
+            time_restrictions: None,
+        }
+    }
+}
+
+impl SecurityPolicy {
+    /// Check if a tool is allowed by this policy
+    pub fn is_tool_allowed(&self, tool_name: &str) -> bool {
+        // Blocked takes precedence
+        if self.blocked_tools.contains(&tool_name.to_string()) {
+            return false;
+        }
+
+        // If allowed_tools is empty, all non-blocked tools are allowed
+        if self.allowed_tools.is_empty() {
+            return true;
+        }
+
+        // Otherwise, tool must be in allowed list
+        self.allowed_tools.contains(&tool_name.to_string())
+    }
+
+    /// Check if a tool requires confirmation
+    pub fn requires_confirmation(&self, tool_name: &str) -> bool {
+        self.require_confirmation.contains(&tool_name.to_string())
+    }
+
+    /// Format policy as TOML for display
+    pub fn to_toml(&self) -> String {
+        let mut lines = vec![];
+
+        if !self.allowed_tools.is_empty() {
+            lines.push(format!("allowed_tools = {:?}", self.allowed_tools));
+        }
+
+        if !self.blocked_tools.is_empty() {
+            lines.push(format!("blocked_tools = {:?}", self.blocked_tools));
+        }
+
+        if !self.require_confirmation.is_empty() {
+            lines.push(format!("require_confirmation = {:?}", self.require_confirmation));
+        }
+
+        if let Some(limit) = self.rate_limit {
+            lines.push(format!("rate_limit = {}", limit));
+        }
+
+        if let Some(ref tr) = self.time_restrictions {
+            lines.push(String::new());
+            lines.push("[time_restrictions]".to_string());
+            lines.push(format!("enabled = {}", tr.enabled));
+            lines.push(format!("start_hour = {}", tr.start_hour));
+            lines.push(format!("end_hour = {}", tr.end_hour));
+            if let Some(ref tz) = tr.timezone {
+                lines.push(format!("timezone = \"{}\"", tz));
+            }
+        }
+
+        if lines.is_empty() {
+            "# Default policy (no restrictions)".to_string()
+        } else {
+            lines.join("\n")
+        }
+    }
+}
+
+/// Time-based access restrictions
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TimeRestriction {
+    /// Whether time restrictions are enabled
+    pub enabled: bool,
+
+    /// Start hour (0-23) when access is allowed
+    pub start_hour: u8,
+
+    /// End hour (0-23) when access is allowed
+    pub end_hour: u8,
+
+    /// Timezone (e.g., "America/New_York")
+    pub timezone: Option<String>,
+}
+
 /// Vault configuration (non-sensitive, stored in plaintext)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultConfig {
@@ -309,6 +596,10 @@ pub struct VaultConfig {
 
     /// Show expiration warnings this many days before
     pub expiration_warning_days: u32,
+
+    /// Security policy for access control
+    #[serde(default)]
+    pub security_policy: SecurityPolicy,
 }
 
 impl Default for VaultConfig {
@@ -323,6 +614,7 @@ impl Default for VaultConfig {
             mcp_server_mode: McpServerMode::Stdio,
             mcp_http_port: 3000,
             expiration_warning_days: 14,
+            security_policy: SecurityPolicy::default(),
         }
     }
 }

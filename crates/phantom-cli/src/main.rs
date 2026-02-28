@@ -49,6 +49,9 @@ enum Commands {
         /// Set expiration (e.g., 7d, 30d, 90d)
         #[arg(long)]
         expires: Option<String>,
+        /// Namespace for this secret
+        #[arg(long)]
+        namespace: Option<String>,
     },
 
     /// List all secrets (names only, never values)
@@ -232,11 +235,11 @@ async fn handle_command(cmd: Commands) -> Result<(), Box<dyn std::error::Error>>
                 handle_biometric_disable(&vault_dir).await?;
             }
         },
-        Commands::Add { name, from_env, expires } => {
-            handle_add(&vault_dir, &name, from_env, expires).await?;
+        Commands::Add { name, from_env, expires, namespace } => {
+            handle_add(&vault_dir, &name, from_env, expires, namespace).await?;
         }
-        Commands::List { namespace: _ } => {
-            handle_list(&vault_dir).await?;
+        Commands::List { namespace } => {
+            handle_list(&vault_dir, namespace).await?;
         }
         Commands::Show { name, masked } => {
             handle_show(&vault_dir, &name, masked).await?;
@@ -251,34 +254,31 @@ async fn handle_command(cmd: Commands) -> Result<(), Box<dyn std::error::Error>>
             handle_run(&vault_dir, &secret, &command).await?;
         }
         Commands::Namespace { action } => match action {
-            NamespaceCommands::List => println!("phantom namespace list: Coming soon"),
-            NamespaceCommands::Create { name } => println!("phantom namespace create {}: Coming soon", name),
-            NamespaceCommands::Use { name } => println!("phantom namespace use {}: Coming soon", name),
-            NamespaceCommands::Delete { name } => println!("phantom namespace delete {}: Coming soon", name),
+            NamespaceCommands::List => handle_namespace_list(&vault_dir).await?,
+            NamespaceCommands::Create { name } => handle_namespace_create(&vault_dir, &name).await?,
+            NamespaceCommands::Use { name } => handle_namespace_use(&vault_dir, &name).await?,
+            NamespaceCommands::Delete { name } => handle_namespace_delete(&vault_dir, &name).await?,
         },
         Commands::Rotate { name } => {
             handle_rotate(&vault_dir, &name).await?;
         }
         Commands::Audit { last } => {
-            println!("phantom audit --last {}: Coming soon", last);
+            handle_audit(&vault_dir, last).await?;
         }
         Commands::Health => {
             handle_health(&vault_dir).await?;
         }
         Commands::Canary { action } => match action {
             CanaryCommands::Create { name, pattern } => {
-                println!("phantom canary create {}: Coming soon", name);
-                if let Some(p) = pattern {
-                    println!("  --pattern {}", p);
-                }
+                handle_canary_create(&vault_dir, &name, pattern).await?;
             }
-            CanaryCommands::List => println!("phantom canary list: Coming soon"),
-            CanaryCommands::Delete { name } => println!("phantom canary delete {}: Coming soon", name),
+            CanaryCommands::List => handle_canary_list(&vault_dir).await?,
+            CanaryCommands::Delete { name } => handle_canary_delete(&vault_dir, &name).await?,
         },
         Commands::Policy { action } => match action {
-            PolicyCommands::Show => println!("phantom policy show: Coming soon"),
-            PolicyCommands::Set { path } => println!("phantom policy set {}: Coming soon", path),
-            PolicyCommands::Reset => println!("phantom policy reset: Coming soon"),
+            PolicyCommands::Show => handle_policy_show(&vault_dir).await?,
+            PolicyCommands::Set { path } => handle_policy_set(&vault_dir, &path).await?,
+            PolicyCommands::Reset => handle_policy_reset(&vault_dir).await?,
         },
         Commands::Mcp { action } => match action {
             McpCommands::Install => {
@@ -493,6 +493,7 @@ async fn handle_add(
     name: &str,
     from_env: Option<String>,
     expires: Option<String>,
+    namespace: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !vault_exists(vault_dir).await {
         return Err("No vault found. Run 'phantom init' first.".into());
@@ -522,6 +523,10 @@ async fn handle_add(
     // Create entry
     let mut entry = SecretEntry::new(name.to_string(), SecretType::default());
 
+    // Handle namespace (use provided, active, or default)
+    let effective_namespace = namespace.or_else(read_active_namespace);
+    entry.namespace = effective_namespace.clone();
+
     // Handle expiration
     if let Some(exp) = expires {
         let days = parse_duration(&exp)?;
@@ -546,12 +551,16 @@ async fn handle_add(
 
     save_vault(vault_dir, &vault_data, &keys, &encrypted_vault.salt).await?;
 
-    println!("Secret '{}' added successfully", name);
+    if let Some(ns) = effective_namespace {
+        println!("Secret '{}' added to namespace '{}'", name, ns);
+    } else {
+        println!("Secret '{}' added successfully", name);
+    }
 
     Ok(())
 }
 
-async fn handle_list(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_list(vault_dir: &PathBuf, namespace: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     if !vault_exists(vault_dir).await {
         println!("No vault found. Run 'phantom init' first.");
         return Ok(());
@@ -568,10 +577,43 @@ async fn handle_list(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Erro
         return Ok(());
     }
 
-    println!("Secrets in vault:");
+    // Determine which namespace to filter by
+    // Priority: CLI flag > active namespace > show all
+    let active_ns = read_active_namespace();
+    let filter_ns: Option<String> = namespace.or(active_ns);
+
+    // Get filtered entries
+    let entries: Vec<&SecretEntry> = if filter_ns.as_deref() == Some("default") || filter_ns.is_none() {
+        // Show all if "default" or no filter
+        vault_data.entries.iter().collect()
+    } else {
+        vault_data.filter_by_namespace(filter_ns.as_deref())
+    };
+
+    if entries.is_empty() {
+        if let Some(ref ns) = filter_ns {
+            println!("No secrets in namespace '{}'.", ns);
+        } else {
+            println!("No secrets stored.");
+        }
+        println!();
+        println!("Add a secret with: phantom add <name>");
+        return Ok(());
+    }
+
+    // Print header with namespace info
+    if let Some(ref ns) = filter_ns {
+        if ns != "default" {
+            println!("Secrets in namespace '{}':", ns);
+        } else {
+            println!("Secrets in vault:");
+        }
+    } else {
+        println!("Secrets in vault:");
+    }
     println!();
 
-    for entry in &vault_data.entries {
+    for entry in &entries {
         let status = if entry.is_expired() {
             " [EXPIRED]"
         } else if entry.needs_rotation() {
@@ -586,11 +628,18 @@ async fn handle_list(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Erro
             ""
         };
 
-        println!("  {} {}{}", "*", entry.reference, status);
+        // Show namespace tag if showing all
+        let ns_tag = if filter_ns.is_none() || filter_ns.as_deref() == Some("default") {
+            entry.namespace.as_ref().map(|n| format!(" [{}]", n)).unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        println!("  {} {}{}{}", "*", entry.reference, ns_tag, status);
     }
 
     println!();
-    println!("Total: {} secret(s)", vault_data.entries.len());
+    println!("Total: {} secret(s)", entries.len());
 
     Ok(())
 }
@@ -874,6 +923,529 @@ async fn handle_health(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Er
             println!("[!!] Failed to decrypt vault: {}", e);
         }
     }
+
+    Ok(())
+}
+
+async fn handle_audit(
+    vault_dir: &PathBuf,
+    last: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    let password = prompt_password("Enter master password: ")?;
+    let config = load_config(vault_dir).await?;
+    let (_vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    // Create audit logger
+    let mut logger = vault_core::AuditLogger::new(vault_dir, None);
+    logger.set_keys(keys);
+
+    // Read entries
+    let entries = logger.read_entries(Some(last), None).await?;
+
+    if entries.is_empty() {
+        println!("No audit entries found.");
+        return Ok(());
+    }
+
+    println!("Audit Log (last {} entries)", last);
+    println!("===========================");
+    println!();
+
+    for entry in entries.iter().rev() {
+        let timestamp = entry.timestamp.format("%Y-%m-%d %H:%M:%S");
+        let event_str = format_audit_event(&entry.event);
+        println!("[{}] {}", timestamp, event_str);
+    }
+
+    Ok(())
+}
+
+fn format_audit_event(event: &vault_core::AuditEvent) -> String {
+    use vault_core::AuditEvent;
+    match event {
+        AuditEvent::VaultUnlocked { biometric } => {
+            format!("VaultUnlocked (biometric: {})", biometric)
+        }
+        AuditEvent::VaultLocked { reason } => {
+            format!("VaultLocked (reason: {:?})", reason)
+        }
+        AuditEvent::UnlockFailed { attempt_count } => {
+            format!("UnlockFailed (attempts: {})", attempt_count)
+        }
+        AuditEvent::LockedOut { duration_seconds } => {
+            format!("LockedOut (duration: {}s)", duration_seconds)
+        }
+        AuditEvent::SecretAccessed { reference, tool_name, .. } => {
+            if let Some(tool) = tool_name {
+                format!("SecretAccessed: {} (tool: {})", reference, tool)
+            } else {
+                format!("SecretAccessed: {}", reference)
+            }
+        }
+        AuditEvent::SecretCreated { reference, secret_type, .. } => {
+            format!("SecretCreated: {} (type: {})", reference, secret_type)
+        }
+        AuditEvent::SecretUpdated { reference, updated_field, .. } => {
+            format!("SecretUpdated: {} (field: {})", reference, updated_field)
+        }
+        AuditEvent::SecretDeleted { reference, .. } => {
+            format!("SecretDeleted: {}", reference)
+        }
+        AuditEvent::SecretRotated { reference, .. } => {
+            format!("SecretRotated: {}", reference)
+        }
+        AuditEvent::LeakBlocked { tool_name, pattern_name, secret_reference } => {
+            if let Some(secret) = secret_reference {
+                format!("LeakBlocked: {} detected {} in {}", pattern_name, secret, tool_name)
+            } else {
+                format!("LeakBlocked: {} pattern in {}", pattern_name, tool_name)
+            }
+        }
+        AuditEvent::ToolCalled { tool_name, credentials_injected, .. } => {
+            format!("ToolCalled: {} (credentials: {})", tool_name, credentials_injected)
+        }
+        AuditEvent::ConfigChanged { setting, old_value, new_value } => {
+            format!("ConfigChanged: {} ('{}' -> '{}')", setting, old_value, new_value)
+        }
+        AuditEvent::VaultBackedUp { destination } => {
+            format!("VaultBackedUp: {}", destination)
+        }
+        AuditEvent::VaultRestored { source } => {
+            format!("VaultRestored: {}", source)
+        }
+        AuditEvent::SecretsExported { count, encrypted } => {
+            format!("SecretsExported: {} secrets (encrypted: {})", count, encrypted)
+        }
+        AuditEvent::SecretsImported { count, format } => {
+            format!("SecretsImported: {} secrets (format: {})", count, format)
+        }
+    }
+}
+
+// === Namespace Handlers ===
+
+fn get_active_namespace_file() -> PathBuf {
+    default_vault_dir().join("active_namespace")
+}
+
+fn read_active_namespace() -> Option<String> {
+    let path = get_active_namespace_file();
+    std::fs::read_to_string(&path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "default")
+}
+
+fn write_active_namespace(namespace: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let path = get_active_namespace_file();
+    if let Some(ns) = namespace {
+        std::fs::write(&path, ns)?;
+    } else {
+        let _ = std::fs::remove_file(&path);
+    }
+    Ok(())
+}
+
+async fn handle_namespace_list(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    let password = prompt_password("Enter master password: ")?;
+    let config = load_config(vault_dir).await?;
+    let (vault_data, _keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    let namespaces = vault_data.list_namespaces();
+    let active = read_active_namespace();
+
+    println!("Namespaces:");
+    println!();
+
+    // Default namespace (no namespace assigned)
+    let default_count = vault_data.entries.iter().filter(|e| e.namespace.is_none()).count();
+    let default_marker = if active.is_none() { " (active)" } else { "" };
+    println!("  default{} ({} secrets)", default_marker, default_count);
+
+    // Named namespaces
+    for ns in &namespaces {
+        let count = vault_data.count_in_namespace(Some(ns));
+        let marker = if active.as_deref() == Some(ns) { " (active)" } else { "" };
+        println!("  {}{} ({} secrets)", ns, marker, count);
+    }
+
+    if namespaces.is_empty() && default_count > 0 {
+        println!();
+        println!("All secrets are in the default namespace.");
+        println!("Create a namespace with: phantom namespace create <name>");
+    }
+
+    Ok(())
+}
+
+async fn handle_namespace_create(vault_dir: &PathBuf, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    // Validate namespace name
+    if name.is_empty() || name == "default" {
+        return Err("Invalid namespace name. Cannot use empty string or 'default'.".into());
+    }
+
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Err("Namespace name can only contain alphanumeric characters, hyphens, and underscores.".into());
+    }
+
+    let password = prompt_password("Enter master password: ")?;
+    let config = load_config(vault_dir).await?;
+    let (vault_data, _keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    // Check if namespace already exists
+    let namespaces = vault_data.list_namespaces();
+    if namespaces.contains(&name.to_string()) {
+        println!("Namespace '{}' already exists.", name);
+        println!();
+        println!("Switch to it with: phantom namespace use {}", name);
+        return Ok(());
+    }
+
+    // Set as active
+    write_active_namespace(Some(name))?;
+
+    println!("Created namespace '{}'", name);
+    println!("Active namespace set to '{}'", name);
+    println!();
+    println!("New secrets will be added to this namespace.");
+    println!("To add an existing secret to this namespace, use:");
+    println!("  phantom add <name> --namespace {}", name);
+
+    Ok(())
+}
+
+async fn handle_namespace_use(vault_dir: &PathBuf, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    if name == "default" || name.is_empty() {
+        write_active_namespace(None)?;
+        println!("Active namespace set to 'default' (showing all secrets)");
+        return Ok(());
+    }
+
+    let password = prompt_password("Enter master password: ")?;
+    let config = load_config(vault_dir).await?;
+    let (vault_data, _keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    // Check if namespace exists (has any secrets)
+    let namespaces = vault_data.list_namespaces();
+    if !namespaces.contains(&name.to_string()) {
+        println!("Warning: Namespace '{}' has no secrets yet.", name);
+        println!("Creating it now...");
+    }
+
+    write_active_namespace(Some(name))?;
+    println!("Active namespace set to '{}'", name);
+
+    let count = vault_data.count_in_namespace(Some(name));
+    if count > 0 {
+        println!("{} secret(s) in this namespace", count);
+    }
+
+    Ok(())
+}
+
+async fn handle_namespace_delete(vault_dir: &PathBuf, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    if name == "default" || name.is_empty() {
+        return Err("Cannot delete the default namespace.".into());
+    }
+
+    let password = prompt_password("Enter master password: ")?;
+    let config = load_config(vault_dir).await?;
+    let (mut vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    // Count secrets in this namespace
+    let count = vault_data.count_in_namespace(Some(name));
+
+    if count == 0 {
+        // If active namespace, clear it
+        if read_active_namespace().as_deref() == Some(name) {
+            write_active_namespace(None)?;
+        }
+        println!("Namespace '{}' has no secrets. Nothing to delete.", name);
+        return Ok(());
+    }
+
+    // Confirm deletion
+    print!("Delete namespace '{}' ({} secrets will be moved to default)? [y/N]: ", name, count);
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+
+    if !input.trim().eq_ignore_ascii_case("y") {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    // Move all secrets in this namespace to default (None)
+    for entry in &mut vault_data.entries {
+        if entry.namespace.as_deref() == Some(name) {
+            entry.namespace = None;
+            entry.updated_at = chrono::Utc::now();
+        }
+    }
+
+    // Save vault
+    let vault_path = vault_file_path(vault_dir);
+    let encrypted_vault: vault_core::EncryptedVault = {
+        let data = tokio::fs::read(&vault_path).await?;
+        serde_json::from_slice(&data)?
+    };
+    save_vault(vault_dir, &vault_data, &keys, &encrypted_vault.salt).await?;
+
+    // Clear active namespace if it was this one
+    if read_active_namespace().as_deref() == Some(name) {
+        write_active_namespace(None)?;
+    }
+
+    println!("Namespace '{}' deleted. {} secret(s) moved to default.", name, count);
+
+    Ok(())
+}
+
+// === Canary Handlers ===
+
+async fn handle_canary_create(
+    vault_dir: &PathBuf,
+    name: &str,
+    pattern: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vault_core::{CanaryPattern, CanarySecret};
+
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    // Parse pattern (default to AWS)
+    let canary_pattern: CanaryPattern = match pattern.as_deref() {
+        Some(p) => p.parse().map_err(|e: String| e)?,
+        None => CanaryPattern::AwsAccessKey,
+    };
+
+    let password = prompt_password("Enter master password: ")?;
+    let config = load_config(vault_dir).await?;
+    let (mut vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    // Check if canary with this name already exists
+    if vault_data.canaries.iter().any(|c| c.name == name) {
+        return Err(format!("Canary '{}' already exists.", name).into());
+    }
+
+    // Create the canary
+    let canary = CanarySecret::new(name.to_string(), canary_pattern.clone());
+    let masked_value = mask_canary_value(&canary.value);
+
+    vault_data.canaries.push(canary);
+
+    // Save vault
+    let vault_path = vault_file_path(vault_dir);
+    let encrypted_vault: vault_core::EncryptedVault = {
+        let data = tokio::fs::read(&vault_path).await?;
+        serde_json::from_slice(&data)?
+    };
+    save_vault(vault_dir, &vault_data, &keys, &encrypted_vault.salt).await?;
+
+    println!("Canary '{}' created ({} pattern)", name, canary_pattern.name());
+    println!("Value: {}", masked_value);
+    println!();
+    println!("If this value appears in any command output, an alert will be logged.");
+
+    Ok(())
+}
+
+fn mask_canary_value(value: &str) -> String {
+    if value.len() > 8 {
+        format!("{}...{}", &value[..4], &value[value.len()-4..])
+    } else {
+        value.to_string()
+    }
+}
+
+async fn handle_canary_list(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    let password = prompt_password("Enter master password: ")?;
+    let config = load_config(vault_dir).await?;
+    let (vault_data, _keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    if vault_data.canaries.is_empty() {
+        println!("No canary secrets configured.");
+        println!();
+        println!("Create one with: phantom canary create <name> --pattern aws");
+        return Ok(());
+    }
+
+    println!("Canary Secrets:");
+    println!();
+
+    for canary in &vault_data.canaries {
+        let masked_value = mask_canary_value(&canary.value);
+        let alert_info = if canary.alert_count > 0 {
+            format!(" [ALERTS: {}]", canary.alert_count)
+        } else {
+            String::new()
+        };
+
+        println!("  {} ({}) = {}{}", canary.name, canary.pattern.name(), masked_value, alert_info);
+
+        if let Some(last_alert) = canary.last_alert_at {
+            println!("    Last alert: {}", last_alert.format("%Y-%m-%d %H:%M:%S UTC"));
+        }
+    }
+
+    println!();
+    println!("Total: {} canary secret(s)", vault_data.canaries.len());
+
+    Ok(())
+}
+
+async fn handle_canary_delete(
+    vault_dir: &PathBuf,
+    name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    let password = prompt_password("Enter master password: ")?;
+    let config = load_config(vault_dir).await?;
+    let (mut vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    let idx = vault_data.canaries.iter().position(|c| c.name == name)
+        .ok_or_else(|| format!("Canary '{}' not found", name))?;
+
+    // Confirm deletion
+    print!("Delete canary '{}'? [y/N]: ", name);
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+
+    if !input.trim().eq_ignore_ascii_case("y") {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    vault_data.canaries.remove(idx);
+
+    // Save vault
+    let vault_path = vault_file_path(vault_dir);
+    let encrypted_vault: vault_core::EncryptedVault = {
+        let data = tokio::fs::read(&vault_path).await?;
+        serde_json::from_slice(&data)?
+    };
+    save_vault(vault_dir, &vault_data, &keys, &encrypted_vault.salt).await?;
+
+    println!("Canary '{}' deleted.", name);
+
+    Ok(())
+}
+
+// === Policy Handlers ===
+
+async fn handle_policy_show(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    let config = load_config(vault_dir).await?;
+
+    println!("Security Policy:");
+    println!("================");
+    println!();
+    println!("{}", config.security_policy.to_toml());
+    println!();
+
+    if config.security_policy == vault_core::SecurityPolicy::default() {
+        println!("(Using default policy)");
+    }
+
+    Ok(())
+}
+
+async fn handle_policy_set(
+    vault_dir: &PathBuf,
+    path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vault_core::SecurityPolicy;
+
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    // Read and parse the policy file
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read policy file '{}': {}", path, e))?;
+
+    let policy: SecurityPolicy = toml::from_str(&content)
+        .map_err(|e| format!("Invalid policy file: {}", e))?;
+
+    // Load current config
+    let mut config = load_config(vault_dir).await?;
+    config.security_policy = policy;
+
+    // Save config
+    let config_path = vault_dir.join("config.toml");
+    let config_toml = toml::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    std::fs::write(&config_path, config_toml)?;
+
+    println!("Security policy updated from '{}'", path);
+    println!();
+    println!("New policy:");
+    println!("{}", config.security_policy.to_toml());
+
+    Ok(())
+}
+
+async fn handle_policy_reset(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    // Confirm reset
+    print!("Reset security policy to defaults? [y/N]: ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+
+    if !input.trim().eq_ignore_ascii_case("y") {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    // Load and reset config
+    let mut config = load_config(vault_dir).await?;
+    config.security_policy = vault_core::SecurityPolicy::default();
+
+    // Save config
+    let config_path = vault_dir.join("config.toml");
+    let config_toml = toml::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    std::fs::write(&config_path, config_toml)?;
+
+    println!("Security policy reset to defaults.");
+    println!();
+    println!("{}", config.security_policy.to_toml());
 
     Ok(())
 }
