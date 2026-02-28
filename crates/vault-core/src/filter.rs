@@ -9,7 +9,7 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-use crate::error::{FilterError, FilterResult};
+use crate::error::FilterResult;
 
 /// Redaction placeholder
 const REDACTED: &str = "[REDACTED]";
@@ -566,17 +566,22 @@ mod tests {
 
     #[test]
     fn test_stripe_key_detection() {
-        // Using sk_test_ prefix which is for test mode, not live
-        let output = "STRIPE_SECRET_KEY=sk_test_EXAMPLEKEY1234567890abc";
-        let result = scan_output(output);
+        // Using sk_test_ prefix which is for test mode
+        // Pattern requires 24+ chars after sk_test_
+        // Construct the key in parts to avoid GitHub secret scanning
+        let prefix = "sk_test_";
+        let suffix = "000000000000000000000000"; // 24 zeros
+        let output = format!("STRIPE_SECRET_KEY={}{}", prefix, suffix);
+        let result = scan_output(&output);
         assert!(result.has_credentials);
         assert!(result.detected_types.contains(&"stripe_test".to_string()));
     }
 
     #[test]
     fn test_slack_token_detection() {
-        // Using xoxp- prefix (user token) with placeholder pattern
-        let output = "SLACK_TOKEN=xoxp-FAKE-FAKE-FAKE-FAKETOKEN123";
+        // Pattern: xox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*
+        // Using numeric segments to match the actual Slack token format
+        let output = "SLACK_TOKEN=xoxp-1234567890-1234567890-abcdefgh";
         let result = scan_output(output);
         assert!(result.has_credentials);
         assert!(result.detected_types.contains(&"slack_token".to_string()));
@@ -584,7 +589,9 @@ mod tests {
 
     #[test]
     fn test_sendgrid_key_detection() {
-        let output = "SENDGRID_API_KEY=SG.xxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        // Pattern: SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}
+        // First segment needs 22 chars, second needs 43 chars
+        let output = "SENDGRID_API_KEY=SG.xxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         let result = scan_output(output);
         assert!(result.has_credentials);
         assert!(result.detected_types.contains(&"sendgrid_key".to_string()));
@@ -608,9 +615,10 @@ mod tests {
     #[test]
     fn test_detect_patterns() {
         let filter = OutputFilter::new();
-        // Using sk_test_ prefix which is for test mode
-        let output = "AKIAIOSFODNN7EXAMPLE and sk_test_EXAMPLEKEY1234567890abc";
-        let patterns = filter.detect_patterns(output);
+        // Construct stripe test key in parts to avoid GitHub secret scanning
+        let stripe_key = format!("sk_test_{}", "000000000000000000000000");
+        let output = format!("AKIAIOSFODNN7EXAMPLE and {}", stripe_key);
+        let patterns = filter.detect_patterns(&output);
 
         assert!(patterns.contains(&"aws_access_key"));
         assert!(patterns.contains(&"stripe_test"));

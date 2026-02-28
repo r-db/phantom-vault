@@ -11,4 +11,29 @@ name = "phantom"
 path = "src/main.rs"
 
 [dependencies]
+# CLI framework
 clap = { version = "4.5", features = ["derive"] }
+
+# Vault core functionality
+vault-core = { path = "../vault-core" }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Password input
+rpassword = "7.3"
+
+# Directories
+dirs = { workspace = true }
+
+# JSON handling for MCP config
+serde_json = { workspace = true }
+
+# Timestamps
+chrono = { workspace = true }
+
+# TTY detection
+atty = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "2.11"

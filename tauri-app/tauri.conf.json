@@ -30,13 +30,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ],
+    "icon": [],
     "category": "Utility",
     "shortDescription": "Secure credential management for LLM tools",
     "longDescription": "Vault Secrets provides secure credential storage with MCP integration for Claude Code. Credentials are never exposed to LLMs - only symbolic references are used.",

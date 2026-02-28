@@ -13,7 +13,7 @@ use tauri::State;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
-use vault_core::models::{SecretType, VaultConfig};
+use vault_core::models::VaultConfig;
 use vault_tauri::{
     AddSecretInput, AppState, CommandResult, SearchFilter, SecretInfo,
     UpdateSecretInput, VaultStatus,
@@ -173,34 +173,43 @@ async fn add_secret(
 ) -> Result<CommandResult<SecretInfo>, String> {
     let mut state = state.write().await;
 
-    let (vault_data, keys) = match (&mut state.vault_data, &state.keys) {
-        (Some(data), Some(keys)) => (data, keys),
-        _ => return Ok(CommandResult::err("Vault is locked")),
+    // Take ownership of vault_data to avoid borrow conflicts
+    // (DerivedKeys doesn't implement Clone for security reasons)
+    let mut vault_data = match state.vault_data.take() {
+        Some(data) => data,
+        None => return Ok(CommandResult::err("Vault is locked")),
     };
 
-    match vault_tauri::add_secret(vault_data, keys, input) {
-        Ok(info) => {
-            // Save to disk
-            if let Some(salt) = &state.salt {
-                if let Err(e) = vault_tauri::save_vault_state(
-                    &state.vault_dir,
-                    vault_data,
-                    keys,
-                    salt,
-                ).await {
-                    error!("Failed to save vault: {}", e);
-                    return Ok(CommandResult::err(format!("Failed to save: {}", e)));
+    let result = match (&state.keys, &state.salt) {
+        (Some(keys), Some(salt)) => {
+            match vault_tauri::add_secret(&mut vault_data, keys, input) {
+                Ok(info) => {
+                    // Save to disk
+                    if let Err(e) = vault_tauri::save_vault_state(
+                        &state.vault_dir,
+                        &vault_data,
+                        keys,
+                        salt,
+                    ).await {
+                        error!("Failed to save vault: {}", e);
+                        Ok(CommandResult::err(format!("Failed to save: {}", e)))
+                    } else {
+                        info!("Secret '{}' added", info.reference);
+                        Ok(CommandResult::ok(info))
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to add secret: {}", e);
+                    Ok(CommandResult::err(e.to_string()))
                 }
             }
+        }
+        _ => Ok(CommandResult::err("Vault is locked")),
+    };
 
-            info!("Secret '{}' added", info.reference);
-            Ok(CommandResult::ok(info))
-        }
-        Err(e) => {
-            error!("Failed to add secret: {}", e);
-            Ok(CommandResult::err(e.to_string()))
-        }
-    }
+    // Put vault_data back
+    state.vault_data = Some(vault_data);
+    result
 }
 
 /// Update secret metadata
@@ -211,34 +220,42 @@ async fn update_secret(
 ) -> Result<CommandResult<SecretInfo>, String> {
     let mut state = state.write().await;
 
-    let (vault_data, keys) = match (&mut state.vault_data, &state.keys) {
-        (Some(data), Some(keys)) => (data, keys),
-        _ => return Ok(CommandResult::err("Vault is locked")),
+    // Take ownership of vault_data to avoid borrow conflicts
+    let mut vault_data = match state.vault_data.take() {
+        Some(data) => data,
+        None => return Ok(CommandResult::err("Vault is locked")),
     };
 
-    match vault_tauri::update_secret(vault_data, input) {
-        Ok(info) => {
-            // Save to disk
-            if let Some(salt) = &state.salt {
-                if let Err(e) = vault_tauri::save_vault_state(
-                    &state.vault_dir,
-                    vault_data,
-                    keys,
-                    salt,
-                ).await {
-                    error!("Failed to save vault: {}", e);
-                    return Ok(CommandResult::err(format!("Failed to save: {}", e)));
+    let result = match (&state.keys, &state.salt) {
+        (Some(keys), Some(salt)) => {
+            match vault_tauri::update_secret(&mut vault_data, input) {
+                Ok(info) => {
+                    // Save to disk
+                    if let Err(e) = vault_tauri::save_vault_state(
+                        &state.vault_dir,
+                        &vault_data,
+                        keys,
+                        salt,
+                    ).await {
+                        error!("Failed to save vault: {}", e);
+                        Ok(CommandResult::err(format!("Failed to save: {}", e)))
+                    } else {
+                        info!("Secret '{}' updated", info.reference);
+                        Ok(CommandResult::ok(info))
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to update secret: {}", e);
+                    Ok(CommandResult::err(e.to_string()))
                 }
             }
+        }
+        _ => Ok(CommandResult::err("Vault is locked")),
+    };
 
-            info!("Secret '{}' updated", info.reference);
-            Ok(CommandResult::ok(info))
-        }
-        Err(e) => {
-            error!("Failed to update secret: {}", e);
-            Ok(CommandResult::err(e.to_string()))
-        }
-    }
+    // Put vault_data back
+    state.vault_data = Some(vault_data);
+    result
 }
 
 /// Rotate (update) a secret's value
@@ -250,34 +267,42 @@ async fn rotate_secret(
 ) -> Result<CommandResult<()>, String> {
     let mut state = state.write().await;
 
-    let (vault_data, keys) = match (&mut state.vault_data, &state.keys) {
-        (Some(data), Some(keys)) => (data, keys),
-        _ => return Ok(CommandResult::err("Vault is locked")),
+    // Take ownership of vault_data to avoid borrow conflicts
+    let mut vault_data = match state.vault_data.take() {
+        Some(data) => data,
+        None => return Ok(CommandResult::err("Vault is locked")),
     };
 
-    match vault_tauri::update_secret_value(vault_data, keys, &reference, &new_value) {
-        Ok(_) => {
-            // Save to disk
-            if let Some(salt) = &state.salt {
-                if let Err(e) = vault_tauri::save_vault_state(
-                    &state.vault_dir,
-                    vault_data,
-                    keys,
-                    salt,
-                ).await {
-                    error!("Failed to save vault: {}", e);
-                    return Ok(CommandResult::err(format!("Failed to save: {}", e)));
+    let result = match (&state.keys, &state.salt) {
+        (Some(keys), Some(salt)) => {
+            match vault_tauri::update_secret_value(&mut vault_data, keys, &reference, &new_value) {
+                Ok(_) => {
+                    // Save to disk
+                    if let Err(e) = vault_tauri::save_vault_state(
+                        &state.vault_dir,
+                        &vault_data,
+                        keys,
+                        salt,
+                    ).await {
+                        error!("Failed to save vault: {}", e);
+                        Ok(CommandResult::err(format!("Failed to save: {}", e)))
+                    } else {
+                        info!("Secret '{}' rotated", reference);
+                        Ok(CommandResult::ok(()))
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to rotate secret: {}", e);
+                    Ok(CommandResult::err(e.to_string()))
                 }
             }
+        }
+        _ => Ok(CommandResult::err("Vault is locked")),
+    };
 
-            info!("Secret '{}' rotated", reference);
-            Ok(CommandResult::ok(()))
-        }
-        Err(e) => {
-            error!("Failed to rotate secret: {}", e);
-            Ok(CommandResult::err(e.to_string()))
-        }
-    }
+    // Put vault_data back
+    state.vault_data = Some(vault_data);
+    result
 }
 
 /// Delete a secret
@@ -288,34 +313,42 @@ async fn delete_secret(
 ) -> Result<CommandResult<()>, String> {
     let mut state = state.write().await;
 
-    let (vault_data, keys) = match (&mut state.vault_data, &state.keys) {
-        (Some(data), Some(keys)) => (data, keys),
-        _ => return Ok(CommandResult::err("Vault is locked")),
+    // Take ownership of vault_data to avoid borrow conflicts
+    let mut vault_data = match state.vault_data.take() {
+        Some(data) => data,
+        None => return Ok(CommandResult::err("Vault is locked")),
     };
 
-    match vault_tauri::delete_secret(vault_data, &reference) {
-        Ok(_) => {
-            // Save to disk
-            if let Some(salt) = &state.salt {
-                if let Err(e) = vault_tauri::save_vault_state(
-                    &state.vault_dir,
-                    vault_data,
-                    keys,
-                    salt,
-                ).await {
-                    error!("Failed to save vault: {}", e);
-                    return Ok(CommandResult::err(format!("Failed to save: {}", e)));
+    let result = match (&state.keys, &state.salt) {
+        (Some(keys), Some(salt)) => {
+            match vault_tauri::delete_secret(&mut vault_data, &reference) {
+                Ok(_) => {
+                    // Save to disk
+                    if let Err(e) = vault_tauri::save_vault_state(
+                        &state.vault_dir,
+                        &vault_data,
+                        keys,
+                        salt,
+                    ).await {
+                        error!("Failed to save vault: {}", e);
+                        Ok(CommandResult::err(format!("Failed to save: {}", e)))
+                    } else {
+                        info!("Secret '{}' deleted", reference);
+                        Ok(CommandResult::ok(()))
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to delete secret: {}", e);
+                    Ok(CommandResult::err(e.to_string()))
                 }
             }
+        }
+        _ => Ok(CommandResult::err("Vault is locked")),
+    };
 
-            info!("Secret '{}' deleted", reference);
-            Ok(CommandResult::ok(()))
-        }
-        Err(e) => {
-            error!("Failed to delete secret: {}", e);
-            Ok(CommandResult::err(e.to_string()))
-        }
-    }
+    // Put vault_data back
+    state.vault_data = Some(vault_data);
+    result
 }
 
 /// Change master password
