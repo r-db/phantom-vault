@@ -1,0 +1,22 @@
+[package]
+name = "vault-native"
+version = "0.1.0"
+edition = "2021"
+description = "Native FFI bindings for Flutter mobile apps"
+authors = ["Vault Secrets Team"]
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+vault-core = { path = "../crates/vault-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# flutter_rust_bridge - commented out until flutter app is set up
+# flutter_rust_bridge = "2"
+
+[build-dependencies]
+# flutter_rust_bridge_codegen = "2"

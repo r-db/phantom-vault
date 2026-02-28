@@ -1,0 +1,30 @@
+[package]
+name = "vault-secrets"
+version.workspace = true
+edition.workspace = true
+description = "Vault Secrets - Secure credential management for LLM tools"
+authors.workspace = true
+license.workspace = true
+default-run = "vault-secrets"
+
+[build-dependencies]
+tauri-build = { workspace = true, features = [] }
+
+[dependencies]
+vault-core = { path = "../crates/vault-core" }
+vault-tauri = { path = "../crates/vault-tauri" }
+
+tauri = { workspace = true, features = ["devtools"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[[bin]]
+name = "vault-secrets"
+path = "src/main.rs"
