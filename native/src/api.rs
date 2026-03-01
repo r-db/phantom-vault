@@ -37,7 +37,7 @@ pub fn unlock_vault(vault_dir: String, password: String) -> Result<usize, String
     rt.block_on(async {
         let path = PathBuf::from(vault_dir);
         let config = vault_core::models::VaultConfig::default();
-        let (data, _keys) = vault_core::storage::load_vault(&path, password.as_bytes(), &config)
+        let (data, _keys, _salt) = vault_core::storage::load_vault(&path, password.as_bytes(), &config)
             .await
             .map_err(|e| e.to_string())?;
         Ok(data.entries.len())
@@ -55,7 +55,7 @@ pub fn unlock_vault_biometric(vault_dir: String) -> Result<usize, String> {
     rt.block_on(async {
         let path = PathBuf::from(&vault_dir);
         let config = vault_core::models::VaultConfig::default();
-        let (data, _keys) = vault_core::storage::load_vault(&path, &password, &config)
+        let (data, _keys, _salt) = vault_core::storage::load_vault(&path, &password, &config)
             .await
             .map_err(|e| e.to_string())?;
         Ok(data.entries.len())
@@ -109,7 +109,7 @@ pub fn list_secret_references(vault_dir: String, password: String) -> Result<Vec
     rt.block_on(async {
         let path = PathBuf::from(vault_dir);
         let config = vault_core::models::VaultConfig::default();
-        let (data, _keys) = vault_core::storage::load_vault(&path, password.as_bytes(), &config)
+        let (data, _keys, _salt) = vault_core::storage::load_vault(&path, password.as_bytes(), &config)
             .await
             .map_err(|e| e.to_string())?;
         Ok(data.entries.iter().map(|e| e.reference.clone()).collect())

@@ -3,7 +3,7 @@
 //! Secure credential management server for Claude Code integration
 
 use std::path::PathBuf;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use vault_core::storage::default_vault_dir;
@@ -98,15 +98,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Check for auto-unlock via environment (for testing/development only)
+    // Auto-unlock via environment (DEVELOPMENT ONLY - do not use in production!)
+    // This is insecure as the password is stored in plain text in the environment.
+    #[cfg(debug_assertions)]
     if let Ok(password) = std::env::var("VAULT_PASSWORD") {
-        info!("Auto-unlocking vault from environment variable");
+        warn!("VAULT_PASSWORD env var is set - this is INSECURE and for development only!");
         let mut state_write = state.write().await;
-        if let Err(e) = state_write.unlock(password.as_bytes()).await {
-            error!("Failed to unlock vault: {}", e);
+        if let Err(_) = state_write.unlock(password.as_bytes()).await {
+            error!("Failed to auto-unlock vault");
         } else {
-            info!("Vault unlocked successfully");
+            info!("Vault auto-unlocked (development mode)");
         }
+        // Clear the password from memory
+        drop(password);
     }
 
     // Run the MCP server

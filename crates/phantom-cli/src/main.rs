@@ -525,7 +525,7 @@ async fn handle_add(
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (mut vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     // Check if name already exists
     if vault_data.reference_exists(name) {
@@ -586,14 +586,7 @@ async fn handle_add(
     vault_data.entries.push(entry);
     vault_data.encrypted_values.insert(entry_id, encrypted_value);
 
-    // Get salt from existing vault file
-    let vault_path = vault_file_path(vault_dir);
-    let encrypted_vault: vault_core::EncryptedVault = {
-        let data = tokio::fs::read(&vault_path).await?;
-        serde_json::from_slice(&data)?
-    };
-
-    save_vault(vault_dir, &vault_data, &keys, &encrypted_vault.salt).await?;
+    save_vault(vault_dir, &vault_data, &keys, &salt).await?;
 
     if let Some(ns) = effective_namespace {
         println!("Secret '{}' added to namespace '{}'", name, ns);
@@ -612,7 +605,7 @@ async fn handle_list(vault_dir: &PathBuf, namespace: Option<String>) -> Result<(
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (vault_data, _keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     if vault_data.entries.is_empty() {
         println!("No secrets stored.");
@@ -699,7 +692,7 @@ async fn handle_show(
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (vault_data, keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     let entry = vault_data.find_by_reference(name)
         .ok_or_else(|| format!("Secret '{}' not found", name))?;
@@ -719,10 +712,13 @@ async fn handle_show(
 
     if masked || !atty::is(atty::Stream::Stdout) {
         // Show masked value (last 4 chars)
-        let masked_value = if value.len() > 4 {
-            format!("{}...{}", "*".repeat(value.len() - 4), &value[value.len()-4..])
+        let chars: Vec<char> = value.chars().collect();
+        let len = chars.len();
+        let masked_value = if len > 4 {
+            let last: String = chars[len-4..].iter().collect();
+            format!("{}...{}", "*".repeat(len - 4), last)
         } else {
-            "*".repeat(value.len())
+            "*".repeat(len)
         };
         println!("Value: {}", masked_value);
     } else {
@@ -748,7 +744,7 @@ async fn handle_get(
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (vault_data, keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     let entry = vault_data.find_by_reference(name)
         .ok_or_else(|| format!("Secret '{}' not found", name))?;
@@ -775,7 +771,7 @@ async fn handle_remove(
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (mut vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     let entry_idx = vault_data.entries.iter().position(|e| e.reference == name)
         .ok_or_else(|| format!("Secret '{}' not found", name))?;
@@ -798,13 +794,7 @@ async fn handle_remove(
     vault_data.encrypted_values.remove(&entry_id);
 
     // Save
-    let vault_path = vault_file_path(vault_dir);
-    let encrypted_vault: vault_core::EncryptedVault = {
-        let data = tokio::fs::read(&vault_path).await?;
-        serde_json::from_slice(&data)?
-    };
-
-    save_vault(vault_dir, &vault_data, &keys, &encrypted_vault.salt).await?;
+    save_vault(vault_dir, &vault_data, &keys, &salt).await?;
 
     println!("Secret '{}' removed", name);
 
@@ -830,7 +820,7 @@ async fn handle_run(
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (vault_data, keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     // Build environment with secrets
     let mut env_vars: Vec<(String, String)> = Vec::new();
@@ -880,7 +870,7 @@ async fn handle_rotate(
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (mut vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     let entry_idx = vault_data.entries.iter().position(|e| e.reference == name)
         .ok_or_else(|| format!("Secret '{}' not found", name))?;
@@ -916,13 +906,7 @@ async fn handle_rotate(
     vault_data.encrypted_values.insert(entry_id, encrypted_value);
 
     // Save
-    let vault_path = vault_file_path(vault_dir);
-    let encrypted_vault: vault_core::EncryptedVault = {
-        let data = tokio::fs::read(&vault_path).await?;
-        serde_json::from_slice(&data)?
-    };
-
-    save_vault(vault_dir, &vault_data, &keys, &encrypted_vault.salt).await?;
+    save_vault(vault_dir, &vault_data, &keys, &salt).await?;
 
     println!("Secret '{}' rotated successfully", name);
 
@@ -961,7 +945,7 @@ async fn handle_health(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Er
     let config = load_config(vault_dir).await?;
 
     match load_vault(vault_dir, password.as_bytes(), &config).await {
-        Ok((vault_data, _)) => {
+        Ok((vault_data, _, _)) => {
             println!("[OK] Vault decryption successful");
             println!("[OK] {} secret(s) stored", vault_data.entries.len());
 
@@ -994,7 +978,7 @@ async fn handle_audit(
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (_vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (_vault_data, keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     // Create audit logger
     let mut logger = vault_core::AuditLogger::new(vault_dir, None);
@@ -1114,7 +1098,7 @@ async fn handle_namespace_list(vault_dir: &PathBuf) -> Result<(), Box<dyn std::e
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (vault_data, _keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     let namespaces = vault_data.list_namespaces();
     let active = read_active_namespace();
@@ -1159,7 +1143,7 @@ async fn handle_namespace_create(vault_dir: &PathBuf, name: &str) -> Result<(), 
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (vault_data, _keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     // Check if namespace already exists
     let namespaces = vault_data.list_namespaces();
@@ -1196,7 +1180,7 @@ async fn handle_namespace_use(vault_dir: &PathBuf, name: &str) -> Result<(), Box
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (vault_data, _keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     // Check if namespace exists (has any secrets)
     let namespaces = vault_data.list_namespaces();
@@ -1227,7 +1211,7 @@ async fn handle_namespace_delete(vault_dir: &PathBuf, name: &str) -> Result<(), 
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (mut vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     // Count secrets in this namespace
     let count = vault_data.count_in_namespace(Some(name));
@@ -1261,12 +1245,7 @@ async fn handle_namespace_delete(vault_dir: &PathBuf, name: &str) -> Result<(), 
     }
 
     // Save vault
-    let vault_path = vault_file_path(vault_dir);
-    let encrypted_vault: vault_core::EncryptedVault = {
-        let data = tokio::fs::read(&vault_path).await?;
-        serde_json::from_slice(&data)?
-    };
-    save_vault(vault_dir, &vault_data, &keys, &encrypted_vault.salt).await?;
+    save_vault(vault_dir, &vault_data, &keys, &salt).await?;
 
     // Clear active namespace if it was this one
     if read_active_namespace().as_deref() == Some(name) {
@@ -1299,7 +1278,7 @@ async fn handle_canary_create(
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (mut vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     // Check if canary with this name already exists
     if vault_data.canaries.iter().any(|c| c.name == name) {
@@ -1313,12 +1292,7 @@ async fn handle_canary_create(
     vault_data.canaries.push(canary);
 
     // Save vault
-    let vault_path = vault_file_path(vault_dir);
-    let encrypted_vault: vault_core::EncryptedVault = {
-        let data = tokio::fs::read(&vault_path).await?;
-        serde_json::from_slice(&data)?
-    };
-    save_vault(vault_dir, &vault_data, &keys, &encrypted_vault.salt).await?;
+    save_vault(vault_dir, &vault_data, &keys, &salt).await?;
 
     println!("Canary '{}' created ({} pattern)", name, canary_pattern.name());
     println!("Value: {}", masked_value);
@@ -1329,8 +1303,12 @@ async fn handle_canary_create(
 }
 
 fn mask_canary_value(value: &str) -> String {
-    if value.len() > 8 {
-        format!("{}...{}", &value[..4], &value[value.len()-4..])
+    let chars: Vec<char> = value.chars().collect();
+    let len = chars.len();
+    if len > 8 {
+        let first: String = chars[..4].iter().collect();
+        let last: String = chars[len-4..].iter().collect();
+        format!("{}...{}", first, last)
     } else {
         value.to_string()
     }
@@ -1343,7 +1321,7 @@ async fn handle_canary_list(vault_dir: &PathBuf) -> Result<(), Box<dyn std::erro
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (vault_data, _keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     if vault_data.canaries.is_empty() {
         println!("No canary secrets configured.");
@@ -1386,7 +1364,7 @@ async fn handle_canary_delete(
 
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (mut vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     let idx = vault_data.canaries.iter().position(|c| c.name == name)
         .ok_or_else(|| format!("Canary '{}' not found", name))?;
@@ -1405,12 +1383,7 @@ async fn handle_canary_delete(
     vault_data.canaries.remove(idx);
 
     // Save vault
-    let vault_path = vault_file_path(vault_dir);
-    let encrypted_vault: vault_core::EncryptedVault = {
-        let data = tokio::fs::read(&vault_path).await?;
-        serde_json::from_slice(&data)?
-    };
-    save_vault(vault_dir, &vault_data, &keys, &encrypted_vault.salt).await?;
+    save_vault(vault_dir, &vault_data, &keys, &salt).await?;
 
     println!("Canary '{}' deleted.", name);
 
@@ -1518,7 +1491,7 @@ async fn handle_import(
     let content = std::fs::read_to_string(path)?;
     let password = prompt_password("Enter master password: ")?;
     let config = load_config(vault_dir).await?;
-    let (mut vault_data, keys) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
     let mut imported = 0;
     let mut skipped = 0;
@@ -1557,13 +1530,7 @@ async fn handle_import(
     }
 
     // Save
-    let vault_path = vault_file_path(vault_dir);
-    let encrypted_vault: vault_core::EncryptedVault = {
-        let data = tokio::fs::read(&vault_path).await?;
-        serde_json::from_slice(&data)?
-    };
-
-    save_vault(vault_dir, &vault_data, &keys, &encrypted_vault.salt).await?;
+    save_vault(vault_dir, &vault_data, &keys, &salt).await?;
 
     println!();
     println!("Imported {} secret(s), skipped {} (already exist)", imported, skipped);
@@ -1840,22 +1807,28 @@ fn parse_duration(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
 }
 
 /// Mask a secret value for confirmation display
-/// Shows first 3 and last 3 characters with asterisks in between
+/// Shows first few and last few characters with ... in between
 fn mask_value(value: &str) -> String {
-    let len = value.len();
+    let chars: Vec<char> = value.chars().collect();
+    let len = chars.len();
     if len <= 6 {
         // Very short values: show first char and asterisks
         if len <= 1 {
             "*".to_string()
         } else {
-            format!("{}{}*", &value[..1], "*".repeat(len - 1))
+            let first: String = chars[..1].iter().collect();
+            format!("{}{}*", first, "*".repeat(len - 1))
         }
     } else if len <= 12 {
         // Medium values: show first 2 and last 2
-        format!("{}...{}", &value[..2], &value[len-2..])
+        let first: String = chars[..2].iter().collect();
+        let last: String = chars[len-2..].iter().collect();
+        format!("{}...{}", first, last)
     } else {
         // Longer values: show first 3 and last 3
-        format!("{}...{}", &value[..3], &value[len-3..])
+        let first: String = chars[..3].iter().collect();
+        let last: String = chars[len-3..].iter().collect();
+        format!("{}...{}", first, last)
     }
 }
 

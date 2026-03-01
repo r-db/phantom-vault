@@ -87,6 +87,9 @@ pub enum McpError {
 
     #[error("Transport error: {0}")]
     TransportError(String),
+
+    #[error("Tool not allowed by security policy: {0}")]
+    ToolNotAllowed(String),
 }
 
 pub type VaultResult<T> = Result<T, VaultError>;

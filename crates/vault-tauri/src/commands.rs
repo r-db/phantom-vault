@@ -181,15 +181,8 @@ pub async fn unlock_vault(
     password: &str,
     config: &VaultConfig,
 ) -> VaultResult<(VaultData, vault_core::crypto::DerivedKeys, [u8; 32])> {
-    let (data, keys) = storage::load_vault(vault_dir, password.as_bytes(), config).await?;
-
-    // Get salt from encrypted vault
-    let vault_path = storage::vault_file_path(vault_dir);
-    let encrypted = tokio::fs::read(&vault_path).await?;
-    let encrypted_vault: vault_core::models::EncryptedVault =
-        serde_json::from_slice(&encrypted)?;
-
-    Ok((data, keys, encrypted_vault.salt))
+    // load_vault now returns the salt directly
+    storage::load_vault(vault_dir, password.as_bytes(), config).await
 }
 
 /// List all secrets

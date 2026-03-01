@@ -130,6 +130,16 @@ impl ToolHandler {
             state.touch();
         }
 
+        // Check security policy (skip for metadata-only tools)
+        let metadata_only_tools = ["vault_list_secrets", "vault_get_secret_info", "vault_check_secret_status"];
+        if !metadata_only_tools.contains(&tool_name) {
+            let state = self.state.read().await;
+            let policy = &state.config().security_policy;
+            if !policy.is_tool_allowed(tool_name) {
+                return Err(McpError::ToolNotAllowed(tool_name.to_string()));
+            }
+        }
+
         match tool_name {
             "vault_list_secrets" => self.handle_list_secrets(args).await,
             "vault_get_secret_info" => self.handle_get_secret_info(args).await,

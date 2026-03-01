@@ -114,13 +114,7 @@ impl VaultState {
 
         // Try to load and decrypt vault
         match storage::load_vault(&self.base_dir, password, &self.config).await {
-            Ok((data, keys)) => {
-                // Get the salt from the encrypted vault file
-                let vault_path = storage::vault_file_path(&self.base_dir);
-                let encrypted = tokio::fs::read(&vault_path).await?;
-                let encrypted_vault: vault_core::models::EncryptedVault =
-                    serde_json::from_slice(&encrypted)?;
-                let salt = encrypted_vault.salt;
+            Ok((data, keys, salt)) => {
 
                 // Build output filter with loaded secrets
                 let mut filter = OutputFilter::new();

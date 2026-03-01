@@ -118,11 +118,12 @@ pub async fn create_vault(
 }
 
 /// Load and decrypt vault data
+/// Returns (VaultData, DerivedKeys, salt) - salt is needed for saving
 pub async fn load_vault(
     base_dir: &Path,
     password: &[u8],
     config: &VaultConfig,
-) -> VaultResult<(VaultData, DerivedKeys)> {
+) -> VaultResult<(VaultData, DerivedKeys, [u8; 32])> {
     let vault_path = vault_file_path(base_dir);
 
     if !vault_path.exists() {
@@ -157,7 +158,7 @@ pub async fn load_vault(
     // Deserialize
     let vault_data: VaultData = serde_json::from_slice(&plaintext)?;
 
-    Ok((vault_data, keys))
+    Ok((vault_data, keys, encrypted.salt))
 }
 
 /// Save vault data (creates backup first)
@@ -294,7 +295,7 @@ mod tests {
         assert!(vault_exists(base_dir).await);
 
         // Load vault
-        let (vault_data, _keys) = load_vault(base_dir, password, &config).await.unwrap();
+        let (vault_data, _keys, _salt) = load_vault(base_dir, password, &config).await.unwrap();
         assert!(vault_data.entries.is_empty());
     }
 
@@ -318,7 +319,7 @@ mod tests {
         let config = VaultConfig::default();
 
         create_vault(base_dir, password, &config).await.unwrap();
-        let (mut vault_data, keys) = load_vault(base_dir, password, &config).await.unwrap();
+        let (mut vault_data, keys, salt) = load_vault(base_dir, password, &config).await.unwrap();
 
         // Add a secret entry
         let entry = crate::models::SecretEntry::new(
@@ -327,15 +328,11 @@ mod tests {
         );
         vault_data.entries.push(entry);
 
-        // Read the encrypted vault to get the salt
-        let vault_path = vault_file_path(base_dir);
-        let encrypted = read_vault_file(&vault_path).await.unwrap();
-
-        // Save
-        save_vault(base_dir, &vault_data, &keys, &encrypted.salt).await.unwrap();
+        // Save using the salt from load
+        save_vault(base_dir, &vault_data, &keys, &salt).await.unwrap();
 
         // Reload
-        let (reloaded, _) = load_vault(base_dir, password, &config).await.unwrap();
+        let (reloaded, _, _) = load_vault(base_dir, password, &config).await.unwrap();
         assert_eq!(reloaded.entries.len(), 1);
         assert_eq!(reloaded.entries[0].reference, "test-secret");
     }
