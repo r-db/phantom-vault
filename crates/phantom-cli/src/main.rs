@@ -16,7 +16,7 @@ use vault_core::{
 #[derive(Parser)]
 #[command(name = "phantom")]
 #[command(author = "Riscent")]
-#[command(version = "1.0.0")]
+#[command(version)]
 #[command(about = "Phantom Vault - secrets exist but are never observable", long_about = None)]
 #[command(after_help = "Documentation: https://phantomvault.riscent.com")]
 struct Cli {
