@@ -550,7 +550,27 @@ async fn handle_add(
         std::env::var(&env_var)
             .map_err(|_| format!("Environment variable '{}' not found", env_var))?
     } else {
-        prompt_password(&format!("Enter value for '{}': ", name))?
+        // Interactive prompt with confirmation
+        let entered = prompt_password(&format!("Enter value for '{}': ", name))?;
+
+        if entered.is_empty() {
+            return Err("Secret value cannot be empty".into());
+        }
+
+        // Show masked value for confirmation
+        let masked = mask_value(&entered);
+        println!("Value: {}", masked);
+
+        print!("Is this correct? [Y/n]: ");
+        io::stdout().flush()?;
+        let mut confirm = String::new();
+        io::stdin().read_line(&mut confirm)?;
+
+        if confirm.trim().eq_ignore_ascii_case("n") {
+            return Err("Cancelled.".into());
+        }
+
+        entered
     };
 
     if secret_value.is_empty() {
@@ -1823,6 +1843,26 @@ fn parse_duration(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
     }
 
     Err(format!("Invalid duration '{}'. Use format like 7d, 2w, or 3m", s).into())
+}
+
+/// Mask a secret value for confirmation display
+/// Shows first 3 and last 3 characters with asterisks in between
+fn mask_value(value: &str) -> String {
+    let len = value.len();
+    if len <= 6 {
+        // Very short values: show first char and asterisks
+        if len <= 1 {
+            "*".to_string()
+        } else {
+            format!("{}{}*", &value[..1], "*".repeat(len - 1))
+        }
+    } else if len <= 12 {
+        // Medium values: show first 2 and last 2
+        format!("{}...{}", &value[..2], &value[len-2..])
+    } else {
+        // Longer values: show first 3 and last 3
+        format!("{}...{}", &value[..3], &value[len-3..])
+    }
 }
 
 fn which_mcp_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
