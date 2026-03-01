@@ -161,6 +161,10 @@ enum Commands {
         /// Path to .env file
         path: String,
     },
+
+    /// Update phantom to the latest version
+    #[command(after_help = "Downloads and installs the latest version from GitHub releases.")]
+    Update,
 }
 
 #[derive(Subcommand)]
@@ -317,6 +321,9 @@ async fn handle_command(cmd: Commands) -> Result<(), Box<dyn std::error::Error>>
         },
         Commands::Import { path } => {
             handle_import(&vault_dir, &path).await?;
+        }
+        Commands::Update => {
+            handle_update().await?;
         }
     }
 
@@ -1665,6 +1672,129 @@ async fn handle_mcp_status() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("[!!] No vault found. Run 'phantom init' first.");
     }
+
+    Ok(())
+}
+
+// === Helper Functions ===
+
+// === Update Handler ===
+
+async fn handle_update() -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+
+    let current_version = env!("CARGO_PKG_VERSION");
+    println!("Current version: {}", current_version);
+    println!();
+
+    // Detect OS and architecture
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+
+    let os_target = match os {
+        "macos" => "apple-darwin",
+        "linux" => "unknown-linux-gnu",
+        _ => return Err(format!("Unsupported OS: {}", os).into()),
+    };
+
+    let arch_target = match arch {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        _ => return Err(format!("Unsupported architecture: {}", arch).into()),
+    };
+
+    println!("Checking for updates...");
+
+    // Get latest version from GitHub API
+    let output = Command::new("curl")
+        .args(["-fsSL", "https://api.github.com/repos/r-db/phantom-vault/releases/latest"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err("Failed to check for updates. Check your internet connection.".into());
+    }
+
+    let response = String::from_utf8_lossy(&output.stdout);
+
+    // Parse version from response (simple extraction)
+    let latest_version = response
+        .split("\"tag_name\"")
+        .nth(1)
+        .and_then(|s| s.split('"').nth(2))
+        .map(|s| s.trim_start_matches('v'))
+        .ok_or("Failed to parse latest version")?;
+
+    println!("Latest version:  {}", latest_version);
+
+    if current_version == latest_version {
+        println!();
+        println!("You're already on the latest version!");
+        return Ok(());
+    }
+
+    println!();
+    println!("Downloading v{}...", latest_version);
+
+    // Download new binary
+    let download_url = format!(
+        "https://github.com/r-db/phantom-vault/releases/download/v{}/phantom-{}-{}",
+        latest_version, arch_target, os_target
+    );
+
+    let tmp_path = "/tmp/phantom-update";
+
+    let download = Command::new("curl")
+        .args(["-fsSL", "-o", tmp_path, &download_url])
+        .status()?;
+
+    if !download.success() {
+        return Err(format!(
+            "Failed to download update. Binary may not be available for {}-{}",
+            arch_target, os_target
+        ).into());
+    }
+
+    // Make executable
+    Command::new("chmod")
+        .args(["+x", tmp_path])
+        .status()?;
+
+    // Verify it runs
+    let verify = Command::new(tmp_path)
+        .arg("--version")
+        .output()?;
+
+    if !verify.status.success() {
+        std::fs::remove_file(tmp_path)?;
+        return Err("Downloaded binary failed verification".into());
+    }
+
+    let new_version = String::from_utf8_lossy(&verify.stdout);
+    println!("Verified: {}", new_version.trim());
+
+    // Find current binary location
+    let current_exe = std::env::current_exe()?;
+    let install_path = current_exe.to_string_lossy();
+
+    println!();
+    println!("Installing to {}...", install_path);
+
+    // Need sudo for /usr/local/bin
+    if install_path.contains("/usr/local/") {
+        println!("(requires sudo)");
+        let status = Command::new("sudo")
+            .args(["mv", tmp_path, &install_path])
+            .status()?;
+
+        if !status.success() {
+            return Err("Failed to install update (sudo required)".into());
+        }
+    } else {
+        std::fs::rename(tmp_path, &*install_path)?;
+    }
+
+    println!();
+    println!("Updated to v{}!", latest_version);
 
     Ok(())
 }
