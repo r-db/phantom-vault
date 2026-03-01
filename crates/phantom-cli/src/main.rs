@@ -20,8 +20,7 @@ use vault_core::{
 #[command(about = "Phantom Vault - secrets exist but are never observable")]
 #[command(after_help = "EXAMPLES:
   phantom init                      Create a new vault
-  phantom add API_KEY               Add a secret (prompts for value)
-  phantom add API_KEY sk_live_xxx   Add a secret with value
+  phantom add API_KEY               Add a secret (prompts securely)
   phantom list                      List all secrets
   phantom rotate API_KEY            Update a secret's value
   phantom run -s API_KEY -- cmd     Run command with secret injected
@@ -50,14 +49,11 @@ enum Commands {
     /// Add a secret to the vault
     #[command(after_help = "EXAMPLES:
   phantom add API_KEY                    Prompts for value (secure, hidden)
-  phantom add API_KEY sk_live_abc123     Value as argument (visible in history)
   phantom add DB_URL --from-env MY_VAR   Import from environment variable
   phantom add TOKEN --expires 30d        Secret expires in 30 days")]
     Add {
         /// Name of the secret
         name: String,
-        /// Value (optional - will prompt securely if not provided)
-        value: Option<String>,
         /// Import from environment variable
         #[arg(long)]
         from_env: Option<String>,
@@ -119,13 +115,10 @@ enum Commands {
 
     /// Rotate a secret (update its value)
     #[command(after_help = "EXAMPLES:
-  phantom rotate API_KEY                 Prompts for new value (secure)
-  phantom rotate API_KEY sk_new_xyz      New value as argument")]
+  phantom rotate API_KEY                 Prompts for new value (secure)")]
     Rotate {
         /// Name of the secret
         name: String,
-        /// New value (optional - will prompt securely if not provided)
-        value: Option<String>,
     },
 
     /// View audit log
@@ -263,8 +256,8 @@ async fn handle_command(cmd: Commands) -> Result<(), Box<dyn std::error::Error>>
                 handle_biometric_disable(&vault_dir).await?;
             }
         },
-        Commands::Add { name, value, from_env, expires, namespace } => {
-            handle_add(&vault_dir, &name, value, from_env, expires, namespace).await?;
+        Commands::Add { name, from_env, expires, namespace } => {
+            handle_add(&vault_dir, &name, from_env, expires, namespace).await?;
         }
         Commands::List { namespace } => {
             handle_list(&vault_dir, namespace).await?;
@@ -287,8 +280,8 @@ async fn handle_command(cmd: Commands) -> Result<(), Box<dyn std::error::Error>>
             NamespaceCommands::Use { name } => handle_namespace_use(&vault_dir, &name).await?,
             NamespaceCommands::Delete { name } => handle_namespace_delete(&vault_dir, &name).await?,
         },
-        Commands::Rotate { name, value } => {
-            handle_rotate(&vault_dir, &name, value).await?;
+        Commands::Rotate { name } => {
+            handle_rotate(&vault_dir, &name).await?;
         }
         Commands::Audit { last } => {
             handle_audit(&vault_dir, last).await?;
@@ -522,7 +515,6 @@ fn unenroll_biometric(_vault_id: &str) -> Result<(), Box<dyn std::error::Error>>
 async fn handle_add(
     vault_dir: &PathBuf,
     name: &str,
-    value: Option<String>,
     from_env: Option<String>,
     expires: Option<String>,
     namespace: Option<String>,
@@ -540,13 +532,8 @@ async fn handle_add(
         return Err(format!("Secret '{}' already exists. Use 'phantom rotate' to update.", name).into());
     }
 
-    // Get the secret value (priority: value arg > from_env > prompt)
-    let secret_value = if let Some(val) = value {
-        // Warn about shell history if value was passed as argument
-        eprintln!("Warning: Value passed as argument may be visible in shell history.");
-        eprintln!("         Consider using 'phantom add NAME' (prompts securely) or --from-env.");
-        val
-    } else if let Some(env_var) = from_env {
+    // Get the secret value (from_env or secure prompt)
+    let secret_value = if let Some(env_var) = from_env {
         std::env::var(&env_var)
             .map_err(|_| format!("Environment variable '{}' not found", env_var))?
     } else {
@@ -886,7 +873,6 @@ async fn handle_run(
 async fn handle_rotate(
     vault_dir: &PathBuf,
     name: &str,
-    value: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !vault_exists(vault_dir).await {
         return Err("No vault found. Run 'phantom init' first.".into());
@@ -899,16 +885,24 @@ async fn handle_rotate(
     let entry_idx = vault_data.entries.iter().position(|e| e.reference == name)
         .ok_or_else(|| format!("Secret '{}' not found", name))?;
 
-    // Get new value
-    let new_value = if let Some(val) = value {
-        eprintln!("Warning: Value passed as argument may be visible in shell history.");
-        val
-    } else {
-        prompt_password(&format!("Enter new value for '{}': ", name))?
-    };
+    // Get new value with confirmation
+    let new_value = prompt_password(&format!("Enter new value for '{}': ", name))?;
 
     if new_value.is_empty() {
         return Err("Secret value cannot be empty".into());
+    }
+
+    // Show masked value for confirmation
+    let masked = mask_value(&new_value);
+    println!("Value: {}", masked);
+
+    print!("Is this correct? [Y/n]: ");
+    io::stdout().flush()?;
+    let mut confirm = String::new();
+    io::stdin().read_line(&mut confirm)?;
+
+    if confirm.trim().eq_ignore_ascii_case("n") {
+        return Err("Cancelled.".into());
     }
 
     // Encrypt new value
