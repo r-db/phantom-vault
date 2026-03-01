@@ -1716,13 +1716,14 @@ async fn handle_update() -> Result<(), Box<dyn std::error::Error>> {
 
     let response = String::from_utf8_lossy(&output.stdout);
 
-    // Parse version from response (simple extraction)
-    let latest_version = response
-        .split("\"tag_name\"")
-        .nth(1)
-        .and_then(|s| s.split('"').nth(2))
-        .map(|s| s.trim_start_matches('v'))
-        .ok_or("Failed to parse latest version")?;
+    // Parse version from JSON response
+    let json: serde_json::Value = serde_json::from_str(&response)
+        .map_err(|_| "Failed to parse GitHub API response")?;
+
+    let latest_version = json["tag_name"]
+        .as_str()
+        .ok_or("Failed to find tag_name in response")?
+        .trim_start_matches('v');
 
     println!("Latest version:  {}", latest_version);
 
