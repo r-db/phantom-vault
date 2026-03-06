@@ -243,9 +243,31 @@ impl VaultData {
         Self::default()
     }
 
-    /// Find entry by reference name
+    /// Find entry by reference name (searches all namespaces - use find_by_reference_in_namespace for namespace-specific lookup)
     pub fn find_by_reference(&self, reference: &str) -> Option<&SecretEntry> {
         self.entries.iter().find(|e| e.reference == reference)
+    }
+
+    /// Find entry by reference within a specific namespace
+    pub fn find_by_reference_in_namespace(
+        &self,
+        reference: &str,
+        namespace: Option<&str>,
+    ) -> Option<&SecretEntry> {
+        self.entries.iter().find(|e| {
+            e.reference == reference && e.namespace.as_deref() == namespace
+        })
+    }
+
+    /// Find mutable entry by reference within a specific namespace
+    pub fn find_by_reference_in_namespace_mut(
+        &mut self,
+        reference: &str,
+        namespace: Option<&str>,
+    ) -> Option<&mut SecretEntry> {
+        self.entries.iter_mut().find(|e| {
+            e.reference == reference && e.namespace.as_deref() == namespace
+        })
     }
 
     /// Find entry by ID
@@ -285,6 +307,36 @@ impl VaultData {
     /// Count entries in a namespace
     pub fn count_in_namespace(&self, namespace: Option<&str>) -> usize {
         self.filter_by_namespace(namespace).len()
+    }
+
+    /// Validate that all entries have corresponding encrypted values
+    pub fn validate_consistency(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        for entry in &self.entries {
+            if !self.encrypted_values.contains_key(&entry.id) {
+                errors.push(format!(
+                    "Entry '{}' (id: {}) has no encrypted value",
+                    entry.reference, entry.id
+                ));
+            }
+        }
+
+        // Also check for orphaned encrypted values (values without entries)
+        for id in self.encrypted_values.keys() {
+            if !self.entries.iter().any(|e| &e.id == id) {
+                errors.push(format!(
+                    "Encrypted value with id {} has no corresponding entry",
+                    id
+                ));
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 }
 
@@ -356,6 +408,29 @@ impl CanarySecret {
             alert_count: 0,
             last_alert_at: None,
         }
+    }
+
+    /// Create a new canary, checking for value collision with existing canaries
+    /// Returns Err if the generated value collides (regenerate and retry)
+    pub fn new_checked(name: String, pattern: CanaryPattern, existing_canaries: &[CanarySecret]) -> Result<Self, String> {
+        let value = pattern.generate();
+
+        // Check for collision with existing canary values
+        for existing in existing_canaries {
+            if existing.value == value {
+                return Err("Generated canary value collides with existing canary. Please retry.".to_string());
+            }
+        }
+
+        Ok(Self {
+            id: Uuid::new_v4(),
+            name,
+            pattern,
+            value,
+            created_at: Utc::now(),
+            alert_count: 0,
+            last_alert_at: None,
+        })
     }
 
     /// Record an alert (canary detected in output)
@@ -454,6 +529,29 @@ impl std::str::FromStr for CanaryPattern {
     }
 }
 
+/// SSH host key verification mode
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum SshHostKeyMode {
+    /// Accept new keys, reject changed keys (secure default)
+    #[default]
+    AcceptNew,
+    /// Strict: only accept keys in known_hosts
+    Yes,
+    /// Insecure: accept all keys (NOT recommended)
+    No,
+}
+
+impl SshHostKeyMode {
+    /// Get the SSH option value
+    pub fn as_ssh_option(&self) -> &'static str {
+        match self {
+            SshHostKeyMode::AcceptNew => "accept-new",
+            SshHostKeyMode::Yes => "yes",
+            SshHostKeyMode::No => "no",
+        }
+    }
+}
+
 /// Security policy for controlling secret access
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SecurityPolicy {
@@ -476,6 +574,10 @@ pub struct SecurityPolicy {
     /// Time-based access restrictions
     #[serde(default)]
     pub time_restrictions: Option<TimeRestriction>,
+
+    /// SSH host key verification mode (default: accept-new)
+    #[serde(default)]
+    pub ssh_host_key_mode: SshHostKeyMode,
 }
 
 impl Default for SecurityPolicy {
@@ -486,6 +588,7 @@ impl Default for SecurityPolicy {
             require_confirmation: vec!["shell_exec".to_string()],
             rate_limit: None,
             time_restrictions: None,
+            ssh_host_key_mode: SshHostKeyMode::default(),
         }
     }
 }
@@ -565,6 +668,35 @@ pub struct TimeRestriction {
 
     /// Timezone (e.g., "America/New_York")
     pub timezone: Option<String>,
+}
+
+impl TimeRestriction {
+    /// Create a new time restriction with validated hours
+    pub fn new(start_hour: u8, end_hour: u8, timezone: Option<String>) -> Result<Self, String> {
+        if start_hour > 23 {
+            return Err(format!("start_hour {} is invalid (must be 0-23)", start_hour));
+        }
+        if end_hour > 23 {
+            return Err(format!("end_hour {} is invalid (must be 0-23)", end_hour));
+        }
+        Ok(Self {
+            enabled: true,
+            start_hour,
+            end_hour,
+            timezone,
+        })
+    }
+
+    /// Validate that hours are in valid range
+    pub fn validate(&self) -> Result<(), String> {
+        if self.start_hour > 23 {
+            return Err(format!("start_hour {} is invalid (must be 0-23)", self.start_hour));
+        }
+        if self.end_hour > 23 {
+            return Err(format!("end_hour {} is invalid (must be 0-23)", self.end_hour));
+        }
+        Ok(())
+    }
 }
 
 /// Vault configuration (non-sensitive, stored in plaintext)

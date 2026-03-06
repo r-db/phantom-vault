@@ -158,6 +158,13 @@ pub async fn load_vault(
     // Deserialize
     let vault_data: VaultData = serde_json::from_slice(&plaintext)?;
 
+    // Validate consistency between entries and encrypted values
+    if let Err(errors) = vault_data.validate_consistency() {
+        tracing::warn!("Vault consistency issues detected: {:?}", errors);
+        // Don't fail on inconsistency - just log warning
+        // This allows recovery of partially corrupted vaults
+    }
+
     Ok((vault_data, keys, encrypted.salt))
 }
 

@@ -4,7 +4,9 @@
 
 > The API key vault where secrets are used but never seen. Built for the age of AI agents.
 
-**Version 1.0 — February 2026**
+**Version 1.2.0 — February 2026**
+
+> **Note:** See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) for current bugs and limitations.
 
 ---
 
@@ -68,7 +70,7 @@ ryan@macbook ~ % curl -fsSL https://phantomvault.riscent.com/install | sh
   Detecting system...
   ✓ macOS 15.3 (Apple Silicon M4)
 
-  Downloading phantom-vault v1.0.0 for aarch64-apple-darwin...
+  Downloading phantom-vault v1.2.0 for aarch64-apple-darwin...
   ✓ Downloaded (4.2 MB)
 
   Installing to /usr/local/bin/phantom...
@@ -93,7 +95,7 @@ ryan@linux ~ $ curl -fsSL https://phantomvault.riscent.com/install | sh
   Detecting system...
   ✓ Linux x86_64 (Ubuntu 24.04)
 
-  Downloading phantom-vault v1.0.0 for x86_64-unknown-linux-gnu...
+  Downloading phantom-vault v1.2.0 for x86_64-unknown-linux-gnu...
   ✓ Downloaded (4.8 MB)
 
   Installing to /usr/local/bin/phantom...

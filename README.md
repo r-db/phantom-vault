@@ -1,8 +1,13 @@
-# Vault Secrets - Secure LLM Credential Management
+# Phantom Vault - Secure LLM Credential Management
 
-**Status:** IN_PROGRESS (Desktop Integration Complete)
-**Category:** Architecture
-**Last Updated:** 2026-01-19
+**Status:** v1.4.0 PRODUCTION READY
+**Last Updated:** 2026-03-05
+
+---
+
+## New Here? Start Here!
+
+**[5-Minute Quickstart Guide](QUICKSTART.md)** - Install, add keys, connect to Claude
 
 ---
 
@@ -12,11 +17,13 @@
 >
 > **Why it matters:** LLMs can leak credentials through conversations, logs, or training data. This system eliminates that risk entirely while maintaining full functionality.
 >
-> **Current State:** The Rust backend (encryption, MCP server, Tauri commands) and Flutter UI are complete. Desktop app integration via Tauri is fully wired. Ready for build and testing.
+> **Current State:** v1.4.0 - CLI and MCP server are production ready. All critical, high, and most medium/low priority issues have been resolved. See [Known Issues](docs/KNOWN_ISSUES.md) for remaining limitations.
 
 **Related Documents:**
-- [Plan File](~/.claude/plans/nifty-imagining-kettle.md) - Original implementation plan
-- [CRM Documentation Standard](../crm/DOCUMENTATION-TEMPLATE.md) - Documentation format reference
+- [User Manual](USER_MANUAL.md) - Complete usage guide
+- [Architecture](docs/ARCHITECTURE.md) - System design and threat model
+- [Known Issues](docs/KNOWN_ISSUES.md) - Current bugs and workarounds
+- [Documentation Index](docs/INDEX.md) - Full documentation listing
 
 ---
 
@@ -552,29 +559,46 @@ cargo tauri dev
 
 ---
 
-## Current Status
+## Current Status (v1.4.0)
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| vault-core (crypto) | ✅ Complete | AES-256-GCM + Argon2id, 7 tests |
-| vault-core (storage) | ✅ Complete | Encrypted file I/O, backup, atomic writes |
-| vault-core (filter) | ✅ Complete | 50+ patterns, 15+ tests |
-| vault-core (audit) | ✅ Complete | Encrypted audit logging |
-| vault-core (models) | ✅ Complete | All data structures |
+| vault-core (crypto) | ✅ Complete | AES-256-GCM + Argon2id |
+| vault-core (storage) | ✅ Complete | Encrypted file I/O, atomic writes, consistency check |
+| vault-core (filter) | ✅ Complete | 50+ credential patterns, accurate redaction counts |
+| vault-core (audit) | ✅ Complete | HMAC-chained audit logging with client ID |
+| vault-core (models) | ✅ Complete | All data structures, namespace-aware lookups, validation |
 | vault-mcp (server) | ✅ Complete | MCP JSON-RPC protocol |
-| vault-mcp (handlers) | ✅ Complete | 8 tools with credential injection, 6 tests |
-| vault-tauri (commands) | ✅ Complete | 15 IPC commands, full CRUD |
-| tauri-app | ✅ Complete | Desktop app shell, all commands wired |
-| flutter-ui (screens) | ✅ Complete | All 5 screens implemented |
-| flutter-ui (bridge) | ✅ Complete | Tauri IPC with JS interop |
+| vault-mcp (handlers) | ✅ Complete | SSH host key verification configurable |
+| phantom-cli | ✅ Complete | All CLI commands with input validation |
 | native (mobile FFI) | 🔲 Scaffold | API stubs only |
+
+### Known Issues Summary
+
+| Severity | Fixed | Open | Notes |
+|----------|-------|------|-------|
+| CRITICAL | 1 | 0 | All critical issues resolved |
+| HIGH | 3 | 0 | All high priority issues resolved |
+| MEDIUM | 4 | 1 | Only nonce tracking remains (theoretical) |
+| LOW | 4 | 1 | Only file locking remains (documented) |
+
+**See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) for full details.**
+
+### What Was Fixed in v1.4.0
+
+- TimeRestriction hour validation (0-23 range)
+- Environment variable name validation (POSIX standard)
+- Accurate redaction count in output filtering
+- Client ID preserved in audit log entries
+- Canary collision detection added
+- Import command output to stderr (prevents name leakage)
 
 ### Remaining Work
 
-1. **Build & Test** - Run `cargo build` and `cargo tauri dev` to verify
-2. **Mobile FFI** - Implement flutter_rust_bridge bindings for iOS/Android
-3. **Biometric unlock** - iOS Face ID / Android fingerprint integration
-4. **Release packaging** - Code signing, installers, notarization
+1. **Schema migration framework** - For safe upgrades (low risk with serde defaults)
+2. **File locking** - For concurrent access safety
+3. **Mobile FFI** - flutter_rust_bridge for iOS/Android
+4. **Biometric unlock** - Face ID / fingerprint integration
 
 ---
 
@@ -800,4 +824,17 @@ Ensure `withGlobalTauri: true` in `tauri.conf.json` and CSP allows `ipc:` protoc
 
 ---
 
-*Last Updated: 2026-01-19*
+*Last Updated: 2026-03-05*
+
+---
+
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.4.0 | 2026-03-05 | TimeRestriction validation, env var validation, redaction count fix, audit client ID fix, canary collision check, import output fix |
+| 1.3.0 | 2026-02-28 | SSH host key fix (CRITICAL), namespace shadowing, consistency check, unwrap fix, temp file security |
+| 1.2.0 | 2026-02-28 | UTF-8 fix, race condition fix, policy enforcement, debug-only VAULT_PASSWORD |
+| 1.1.5 | 2026-02-28 | Secret confirmation display, removed value-as-argument |
+| 1.1.0 | 2026-02-28 | Namespace, audit, canary, policy features |
+| 1.0.0 | 2026-02-27 | Initial release |

@@ -522,8 +522,8 @@ impl ToolHandler {
         let repository = args.require_string("repository")?;
         let branch = args.opt_string("branch");
 
-        // Get SSH key
-        let (ssh_key, secret_id) = {
+        // Get SSH key and config
+        let (ssh_key, secret_id, ssh_host_key_mode) = {
             let state = self.state.read().await;
             let value = state
                 .get_secret_value(&ssh_key_ref)
@@ -531,7 +531,8 @@ impl ToolHandler {
             let id = state
                 .get_secret_id(&ssh_key_ref)
                 .map_err(|_| McpError::SecretNotFound(ssh_key_ref.clone()))?;
-            (value, id)
+            let host_key_mode = state.config().security_policy.ssh_host_key_mode.as_ssh_option().to_string();
+            (value, id, host_key_mode)
         };
 
         // Log the access
@@ -546,17 +547,36 @@ impl ToolHandler {
             .await;
         }
 
-        // Write SSH key to temporary file
-        let temp_key_path = format!("/tmp/vault-ssh-key-{}", uuid::Uuid::new_v4());
-        tokio::fs::write(&temp_key_path, &ssh_key)
-            .await
+        // Write SSH key to temporary file with secure permissions from creation
+        let temp_key_file = tempfile::Builder::new()
+            .prefix("vault-ssh-key-")
+            .tempfile()
+            .map_err(|e| McpError::ExecutionError(format!("Failed to create temp file: {}", e)))?;
+
+        // Write key and get the path
+        let temp_key_path = temp_key_file.path().to_string_lossy().to_string();
+
+        // Set permissions before writing (tempfile creates with restrictive perms, but be explicit)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(temp_key_file.path(), std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| McpError::ExecutionError(e.to_string()))?;
+        }
+
+        // Write the key
+        use std::io::Write;
+        let mut file = temp_key_file.reopen()
             .map_err(|e| McpError::ExecutionError(e.to_string()))?;
-        tokio::fs::set_permissions(&temp_key_path, std::fs::Permissions::from_mode(0o600))
-            .await
+        file.write_all(ssh_key.as_bytes())
             .map_err(|e| McpError::ExecutionError(e.to_string()))?;
 
-        // Build git command
-        let git_ssh_command = format!("ssh -i {} -o StrictHostKeyChecking=no", temp_key_path);
+        // Build git command with configurable host key verification
+        let git_ssh_command = format!(
+            "ssh -i {} -o StrictHostKeyChecking={}",
+            temp_key_path,
+            ssh_host_key_mode
+        );
 
         let mut git_args = match operation.as_str() {
             "clone" => {
@@ -572,8 +592,7 @@ impl ToolHandler {
             "push" => vec!["-C".to_string(), repository.clone(), "push".to_string()],
             "fetch" => vec!["-C".to_string(), repository.clone(), "fetch".to_string()],
             _ => {
-                // Clean up temp key
-                let _ = tokio::fs::remove_file(&temp_key_path).await;
+                // temp_key_file will be automatically cleaned up on drop
                 return Err(McpError::InvalidArguments(format!(
                     "Invalid git operation: {}",
                     operation
@@ -590,8 +609,8 @@ impl ToolHandler {
             .await
             .map_err(|e| McpError::ExecutionError(e.to_string()))?;
 
-        // Clean up temp key
-        let _ = tokio::fs::remove_file(&temp_key_path).await;
+        // temp_key_file is automatically cleaned up when it goes out of scope
+        drop(temp_key_file);
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -622,6 +641,7 @@ impl ToolHandler {
             .ok_or_else(|| McpError::SecretNotFound(reference.clone()))?;
 
         entry.record_usage();
+        let usage_count = entry.usage_count;
 
         // Save the updated vault
         drop(data);
@@ -629,7 +649,7 @@ impl ToolHandler {
 
         Ok(ToolResult::success(json!({
             "reference": reference,
-            "usage_count": state.data().unwrap().find_by_reference(&reference).unwrap().usage_count,
+            "usage_count": usage_count,
             "recorded": true,
         })))
     }

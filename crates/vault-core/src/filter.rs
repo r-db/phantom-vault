@@ -391,7 +391,9 @@ impl OutputFilter {
 
         // First, check for exact matches of known secrets
         for secret in &self.known_secrets {
-            if redacted.contains(secret) {
+            // Count actual occurrences before replacement
+            let occurrence_count = redacted.matches(secret).count();
+            if occurrence_count > 0 {
                 let replacement = if let Some(ref_name) = self.secret_references.get(secret) {
                     format!("[REDACTED:{}]", ref_name)
                 } else {
@@ -399,16 +401,18 @@ impl OutputFilter {
                 };
                 redacted = redacted.replace(secret, &replacement);
                 detected_types.push("known_secret".to_string());
-                redaction_count += 1;
+                redaction_count += occurrence_count;
             }
         }
 
         // Then, check regex patterns
         for (pattern_info, regex) in COMPILED_PATTERNS.iter() {
-            if regex.is_match(&redacted) {
+            // Count actual matches before replacement
+            let match_count = regex.find_iter(&redacted).count();
+            if match_count > 0 {
                 redacted = regex.replace_all(&redacted, REDACTED).to_string();
                 detected_types.push(pattern_info.name.to_string());
-                redaction_count += 1;
+                redaction_count += match_count;
             }
         }
 

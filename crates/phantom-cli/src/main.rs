@@ -833,6 +833,14 @@ async fn handle_run(
             (secret_ref.clone(), secret_ref.to_uppercase().replace('-', "_"))
         };
 
+        // Validate environment variable name (POSIX standard)
+        if !is_valid_env_var_name(&env_name) {
+            return Err(format!(
+                "Invalid environment variable name '{}'. Must contain only alphanumeric characters and underscores, and cannot start with a digit.",
+                env_name
+            ).into());
+        }
+
         let entry = vault_data.find_by_reference(&secret_name)
             .ok_or_else(|| format!("Secret '{}' not found", secret_name))?;
 
@@ -1510,7 +1518,7 @@ async fn handle_import(
             let value = line[idx+1..].trim().trim_matches('"').trim_matches('\'');
 
             if vault_data.reference_exists(key) {
-                println!("Skipping '{}' (already exists)", key);
+                eprintln!("Skipping '{}' (already exists)", key);
                 skipped += 1;
                 continue;
             }
@@ -1804,6 +1812,24 @@ fn parse_duration(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
     }
 
     Err(format!("Invalid duration '{}'. Use format like 7d, 2w, or 3m", s).into())
+}
+
+/// Validate environment variable name per POSIX standard
+/// Must contain only alphanumeric characters and underscores, and cannot start with a digit
+fn is_valid_env_var_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let first = match name.chars().next() {
+        Some(c) => c,
+        None => return false,
+    };
+    // First character must be letter or underscore
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return false;
+    }
+    // Rest must be alphanumeric or underscore
+    name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Mask a secret value for confirmation display

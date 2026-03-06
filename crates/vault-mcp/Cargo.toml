@@ -1,6 +1,6 @@
 [package]
 name = "vault-mcp"
-version = "1.1.0"
+version = "1.4.0"
 edition = "2021"
 description = "MCP server for secure credential injection"
 authors = ["Vault Secrets Team"]
@@ -27,5 +27,7 @@ futures = "0.3"
 # For reading password from terminal
 rpassword = "7.3"
 
-[dev-dependencies]
+# For secure temporary file creation
 tempfile = "3.10"
+
+[dev-dependencies]

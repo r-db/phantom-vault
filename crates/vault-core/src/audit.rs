@@ -209,6 +209,13 @@ pub struct EncryptedAuditEntry {
     pub ciphertext: Vec<u8>,
 }
 
+/// Inner payload for encrypted audit data (event + client_id)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AuditPayload {
+    event: AuditEvent,
+    client_id: Option<String>,
+}
+
 /// Audit logger
 pub struct AuditLogger {
     /// Base directory for audit log
@@ -248,10 +255,16 @@ impl AuditLogger {
     pub async fn log(&self, event: AuditEvent) -> VaultResult<()> {
         let keys = self.keys.as_ref().ok_or(VaultError::VaultLocked)?;
 
-        let entry = AuditEntry::new(event, self.client_id.clone());
-        let entry_json = serde_json::to_vec(&entry.event)?;
+        let entry = AuditEntry::new(event.clone(), self.client_id.clone());
 
-        let (ciphertext, nonce) = keys.encrypt_audit(&entry_json)?;
+        // Encrypt both event and client_id together
+        let payload = AuditPayload {
+            event,
+            client_id: self.client_id.clone(),
+        };
+        let payload_json = serde_json::to_vec(&payload)?;
+
+        let (ciphertext, nonce) = keys.encrypt_audit(&payload_json)?;
 
         let encrypted_entry = EncryptedAuditEntry {
             id: entry.id,
@@ -320,13 +333,22 @@ impl AuditLogger {
 
             // Decrypt the event
             let decrypted = keys.decrypt_audit(&encrypted.ciphertext, &encrypted.nonce)?;
-            let event: AuditEvent = serde_json::from_slice(&decrypted)?;
+
+            // Try to deserialize as AuditPayload first (new format with client_id)
+            // Fall back to AuditEvent for backwards compatibility with old entries
+            let (event, client_id) = if let Ok(payload) = serde_json::from_slice::<AuditPayload>(&decrypted) {
+                (payload.event, payload.client_id)
+            } else {
+                // Old format: only event was stored
+                let event: AuditEvent = serde_json::from_slice(&decrypted)?;
+                (event, None)
+            };
 
             entries.push(AuditEntry {
                 id: encrypted.id,
                 timestamp: encrypted.timestamp,
                 event,
-                client_id: None, // Client ID is stored in encrypted event
+                client_id,
             });
 
             // Apply limit
