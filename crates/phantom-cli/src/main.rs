@@ -158,6 +158,15 @@ enum Commands {
     /// Update phantom to the latest version
     #[command(after_help = "Downloads and installs the latest version from GitHub releases.")]
     Update,
+
+    /// Open the vault in $EDITOR — like an encrypted notepad
+    #[command(after_help = "EXAMPLES:
+  phantom edit                      Open all secrets in $EDITOR (KEY=VALUE format)
+  EDITOR=nano phantom edit          Use a specific editor
+
+Format: KEY=VALUE per line. Add/modify lines to add/update secrets.
+Remove a line to delete a secret. Lines starting with # are comments.")]
+    Edit,
 }
 
 #[derive(Subcommand)]
@@ -317,6 +326,9 @@ async fn handle_command(cmd: Commands) -> Result<(), Box<dyn std::error::Error>>
         }
         Commands::Update => {
             handle_update().await?;
+        }
+        Commands::Edit => {
+            handle_edit(&vault_dir).await?;
         }
     }
 
@@ -1856,6 +1868,197 @@ fn mask_value(value: &str) -> String {
         let last: String = chars[len-3..].iter().collect();
         format!("{}...{}", first, last)
     }
+}
+
+async fn handle_edit(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    let password = prompt_password("Enter master password: ")?;
+    let config = load_config(vault_dir).await?;
+    let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    let mut current: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for entry in &vault_data.entries {
+        if let Some(ev) = vault_data.encrypted_values.get(&entry.id) {
+            let plaintext = keys.decrypt(&ev.ciphertext, &ev.nonce)?;
+            let value = String::from_utf8(plaintext)
+                .map_err(|_| format!("Secret '{}' contains non-UTF-8 data; edit not supported", entry.reference))?;
+            current.insert(entry.reference.clone(), value);
+        }
+    }
+
+    let mut buf = String::new();
+    buf.push_str("# Phantom Vault — edit secrets, save and quit to encrypt and persist.\n");
+    buf.push_str("# Format: KEY=VALUE  (one per line)\n");
+    buf.push_str("# - Add a new line to create a secret.\n");
+    buf.push_str("# - Change a value to rotate a secret.\n");
+    buf.push_str("# - Delete a line to remove a secret.\n");
+    buf.push_str("# - Values containing spaces or = signs: KEY=\"my value\"\n");
+    buf.push_str("# - Lines starting with # are ignored.\n");
+    buf.push('\n');
+    for (k, v) in &current {
+        let needs_quote = v.contains(' ') || v.contains('=') || v.contains('"') || v.contains('\n') || v.contains('#');
+        if needs_quote {
+            let escaped = v.replace('\\', "\\\\").replace('"', "\\\"");
+            buf.push_str(&format!("{}=\"{}\"\n", k, escaped));
+        } else {
+            buf.push_str(&format!("{}={}\n", k, v));
+        }
+    }
+
+    let tmp_dir = std::env::temp_dir();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_name = format!("phantom-edit-{}-{}.env", std::process::id(), nanos);
+    let tmp_path = tmp_dir.join(tmp_name);
+
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&tmp_path)?;
+        file.write_all(buf.as_bytes())?;
+        file.sync_all()?;
+    }
+
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "vi".to_string());
+
+    let status = std::process::Command::new(&editor)
+        .arg(&tmp_path)
+        .status();
+
+    if status.is_err() || !status.as_ref().map(|s| s.success()).unwrap_or(false) {
+        let _ = secure_shred(&tmp_path);
+        return Err(format!("Editor '{}' did not exit cleanly. No changes saved.", editor).into());
+    }
+
+    let new_content = std::fs::read_to_string(&tmp_path)?;
+    let shred_result = secure_shred(&tmp_path);
+
+    let mut new_map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut parse_errors: Vec<String> = Vec::new();
+    for (lineno, line) in new_content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let idx = match trimmed.find('=') {
+            Some(i) => i,
+            None => {
+                parse_errors.push(format!("line {}: no '=' found, ignored", lineno + 1));
+                continue;
+            }
+        };
+        let key = trimmed[..idx].trim().to_string();
+        if key.is_empty() {
+            parse_errors.push(format!("line {}: empty key, ignored", lineno + 1));
+            continue;
+        }
+        let raw_value = trimmed[idx + 1..].trim();
+        let value = if raw_value.len() >= 2
+            && raw_value.starts_with('"')
+            && raw_value.ends_with('"')
+        {
+            raw_value[1..raw_value.len() - 1]
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\")
+        } else if raw_value.len() >= 2
+            && raw_value.starts_with('\'')
+            && raw_value.ends_with('\'')
+        {
+            raw_value[1..raw_value.len() - 1].to_string()
+        } else {
+            raw_value.to_string()
+        };
+        new_map.insert(key, value);
+    }
+
+    let mut added = 0usize;
+    let mut updated = 0usize;
+    let mut removed = 0usize;
+
+    let removed_keys: Vec<String> = current
+        .keys()
+        .filter(|k| !new_map.contains_key(*k))
+        .cloned()
+        .collect();
+    for k in &removed_keys {
+        let idx = vault_data.entries.iter().position(|e| &e.reference == k);
+        if let Some(i) = idx {
+            let id = vault_data.entries[i].id;
+            vault_data.entries.remove(i);
+            vault_data.encrypted_values.remove(&id);
+            removed += 1;
+        }
+    }
+
+    for (k, v) in &new_map {
+        match current.get(k) {
+            Some(old) if old == v => {}
+            Some(_) => {
+                if let Some(entry) = vault_data.entries.iter().find(|e| &e.reference == k) {
+                    let id = entry.id;
+                    let (ciphertext, nonce) = keys.encrypt(v.as_bytes())?;
+                    vault_data
+                        .encrypted_values
+                        .insert(id, EncryptedValue { nonce, ciphertext });
+                    updated += 1;
+                }
+            }
+            None => {
+                let entry = SecretEntry::new(k.clone(), SecretType::default());
+                let id = entry.id;
+                let (ciphertext, nonce) = keys.encrypt(v.as_bytes())?;
+                vault_data.entries.push(entry);
+                vault_data
+                    .encrypted_values
+                    .insert(id, EncryptedValue { nonce, ciphertext });
+                added += 1;
+            }
+        }
+    }
+
+    save_vault(vault_dir, &vault_data, &keys, &salt).await?;
+    shred_result?;
+
+    println!();
+    println!(
+        "Saved: {} added, {} updated, {} removed",
+        added, updated, removed
+    );
+    if !parse_errors.is_empty() {
+        eprintln!();
+        eprintln!("Parse warnings:");
+        for w in &parse_errors {
+            eprintln!("  {}", w);
+        }
+    }
+
+    Ok(())
+}
+
+fn secure_shred(path: &PathBuf) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let len = std::fs::metadata(path)?.len() as usize;
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+        let zeros = vec![0u8; len];
+        file.write_all(&zeros)?;
+        file.sync_all()?;
+    }
+    std::fs::remove_file(path)?;
+    Ok(())
 }
 
 fn which_mcp_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
