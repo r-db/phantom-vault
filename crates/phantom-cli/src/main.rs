@@ -19,11 +19,12 @@ use vault_core::{
 #[command(version)]
 #[command(about = "Phantom Vault - secrets exist but are never observable")]
 #[command(after_help = "EXAMPLES:
-  phantom init                      Create a new vault
-  phantom add API_KEY               Add a secret (prompts securely)
-  phantom list                      List all secrets
-  phantom rotate API_KEY            Update a secret's value
-  phantom run -s API_KEY -- cmd     Run command with secret injected
+  phantom init                                       Create a new vault
+  phantom edit                                       Edit all secrets in $EDITOR (encrypted notepad)
+  phantom biometric enable                           Enable Keychain auto-unlock (one-time)
+  phantom mcp install                                Wire Phantom into Claude Code
+  phantom guardrail set NAME --cap 50 --provider openai   Set monthly USD cap
+  phantom run -s API_KEY -- cmd                      Run command with secret injected
 
 DOCS: https://phantomvault.riscent.com")]
 struct Cli {
@@ -2319,8 +2320,9 @@ async fn handle_guardrail_status(
     }
 
     println!();
-    println!("Note: provider polling not yet wired in v1.6.x — values shown are cached/zero.");
-    println!("Provider adapters land in v1.7.x once we confirm which providers expose usage to user-level keys.");
+    println!("Note: provider polling lands incrementally — Deepgram, ElevenLabs, Twilio, and");
+    println!("OpenRouter work with user-level keys (shipping in v1.7.1+). OpenAI + Anthropic");
+    println!("require Admin API keys; setup guide will land alongside those adapters.");
     Ok(())
 }
 
@@ -2358,5 +2360,12 @@ fn which_mcp_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
         }
     }
 
-    Err("vault-mcp binary not found. Build it with: cargo build --release -p vault-mcp".into())
+    Err(
+        "vault-mcp binary not found in ~/.cargo/bin, /usr/local/bin, or ~/.local/bin.\n\
+         If you installed via the one-liner, re-run it:\n\
+           curl -fsSL https://phantomvault.riscent.com/install | bash\n\
+         If you built from source, build vault-mcp too:\n\
+           cargo build --release -p vault-mcp"
+            .into(),
+    )
 }

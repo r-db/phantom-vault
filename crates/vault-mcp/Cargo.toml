@@ -1,6 +1,6 @@
 [package]
 name = "vault-mcp"
-version = "1.7.0"
+version = "1.7.1"
 edition = "2021"
 description = "MCP server for secure credential injection"
 authors = ["Vault Secrets Team"]

@@ -108,10 +108,15 @@ echo "✓ Installed phantom + vault-mcp to $install_dir"
 "$install_dir/phantom" --version
 
 if [ "${needs_path_warning:-0}" = "1" ]; then
-  echo
-  echo "NOTE: $install_dir is not on your PATH."
-  echo "      Add this line to your shell profile (~/.zshrc or ~/.bashrc):"
-  echo "          export PATH=\"\$HOME/.local/bin:\$PATH\""
+  # ANSI bold yellow if stdout is a terminal, plain otherwise
+  if [ -t 1 ]; then YELLOW='\033[1;33m'; NC='\033[0m'; else YELLOW=''; NC=''; fi
+  printf "\n${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+  printf "${YELLOW}  ⚠  ACTION REQUIRED — $install_dir is NOT on your PATH${NC}\n"
+  printf "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+  printf "${YELLOW}  Without this, 'phantom' won't be found.${NC}\n"
+  printf "${YELLOW}  Add to your shell profile (~/.zshrc or ~/.bashrc):${NC}\n\n"
+  printf "      ${YELLOW}export PATH=\"\$HOME/.local/bin:\$PATH\"${NC}\n\n"
+  printf "${YELLOW}  Then run:  source ~/.zshrc   (or open a new terminal)${NC}\n\n"
 fi
 
 echo
