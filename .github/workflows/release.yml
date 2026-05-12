@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.5.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            suffix: macos-arm64
+          - target: x86_64-apple-darwin
+            runner: macos-14
+            suffix: macos-x64
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            suffix: linux-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.target }}-cargo-
+
+      - name: Build phantom + vault-mcp
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            -p phantom-cli -p vault-mcp
+
+      - name: Rename binaries with arch suffix
+        run: |
+          mkdir -p artifacts
+          cp target/${{ matrix.target }}/release/phantom artifacts/phantom-${{ matrix.suffix }}
+          cp target/${{ matrix.target }}/release/vault-mcp artifacts/vault-mcp-${{ matrix.suffix }}
+          chmod +x artifacts/phantom-${{ matrix.suffix }} artifacts/vault-mcp-${{ matrix.suffix }}
+
+      - name: Smoke-test the binary (skip on cross-compiled x64-on-arm64)
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: |
+          ./artifacts/phantom-${{ matrix.suffix }} --version
+          ./artifacts/vault-mcp-${{ matrix.suffix }} --version
+
+      - name: Compute SHA256 checksums
+        run: |
+          cd artifacts
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 phantom-${{ matrix.suffix }} vault-mcp-${{ matrix.suffix }} > SHA256SUMS-${{ matrix.suffix }}.txt
+          else
+            sha256sum phantom-${{ matrix.suffix }} vault-mcp-${{ matrix.suffix }} > SHA256SUMS-${{ matrix.suffix }}.txt
+          fi
+          cat SHA256SUMS-${{ matrix.suffix }}.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: phantom-${{ matrix.suffix }}
+          path: artifacts/*
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Determine tag name
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create release + attach binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Phantom Vault ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/phantom-macos-arm64
+            dist/phantom-macos-x64
+            dist/phantom-linux-x64
+            dist/vault-mcp-macos-arm64
+            dist/vault-mcp-macos-x64
+            dist/vault-mcp-linux-x64
+            dist/SHA256SUMS-macos-arm64.txt
+            dist/SHA256SUMS-macos-x64.txt
+            dist/SHA256SUMS-linux-x64.txt
