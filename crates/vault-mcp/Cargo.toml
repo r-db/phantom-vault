@@ -1,6 +1,6 @@
 [package]
 name = "vault-mcp"
-version = "1.4.0"
+version = "1.6.0"
 edition = "2021"
 description = "MCP server for secure credential injection"
 authors = ["Vault Secrets Team"]
@@ -29,5 +29,9 @@ rpassword = "7.3"
 
 # For secure temporary file creation
 tempfile = "3.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Keychain access for biometric auto-unlock on macOS
+security-framework = "2.11"
 
 [dev-dependencies]

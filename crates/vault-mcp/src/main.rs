@@ -91,10 +91,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Check if vault exists
-    {
+    let vault_exists = {
         let state_read = state.read().await;
-        if !state_read.vault_exists().await {
+        let exists = state_read.vault_exists().await;
+        if !exists {
             info!("No vault found at {}. Create one using the UI or CLI first.", vault_dir.display());
+        }
+        exists
+    };
+
+    // Auto-unlock from OS Keychain (biometric enrollment).
+    // This is the production path: user runs `phantom biometric enable` once on their
+    // machine, master password lands in Keychain, MCP server auto-unlocks at boot.
+    // No prompt — there's no TTY when launched by Claude Code's MCP client.
+    if vault_exists && std::env::var("PHANTOM_NO_BIOMETRIC").map(|v| v == "1").unwrap_or(false) == false {
+        if let Some(password) = get_master_from_keychain(&vault_dir.to_string_lossy()) {
+            let mut state_write = state.write().await;
+            match state_write.unlock(&password).await {
+                Ok(_) => info!("Vault auto-unlocked from Keychain (biometric enrollment)"),
+                Err(e) => warn!("Keychain entry present but unlock failed: {}. Vault remains locked.", e),
+            }
+            // Drop password explicitly to encourage zeroization
+            drop(password);
+        } else {
+            info!("No Keychain entry for this vault. Vault starts locked. Enable biometric via: phantom biometric enable");
         }
     }
 
@@ -119,4 +139,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Vault MCP Server shutting down");
     Ok(())
+}
+
+/// Retrieve the master password from the macOS Keychain (set there by `phantom biometric enable`).
+/// Returns None on non-macOS platforms or if the keychain entry is missing.
+#[cfg(target_os = "macos")]
+fn get_master_from_keychain(vault_id: &str) -> Option<Vec<u8>> {
+    use security_framework::passwords::get_generic_password;
+    get_generic_password("com.phantomvault.master-key", vault_id).ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_master_from_keychain(_vault_id: &str) -> Option<Vec<u8>> {
+    None
 }

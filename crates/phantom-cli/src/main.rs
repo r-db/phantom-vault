@@ -355,7 +355,7 @@ async fn handle_init(vault_dir: &PathBuf, enable_biometric: bool) -> Result<(), 
     }
 
     // Get password
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let confirm = prompt_password("Confirm master password: ")?;
 
     if password != confirm {
@@ -420,26 +420,31 @@ async fn handle_biometric_status() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn handle_biometric_enable(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    if !is_biometric_available() {
-        return Err("Biometric authentication is not available on this system".into());
-    }
-
+    // Note: this enrolls the vault for Keychain auto-unlock. Touch ID hardware (when present)
+    // adds an extra prompt layer; without it, the Keychain entry is still encrypted and
+    // tied to your logged-in user session. Either way the master password leaves the prompt
+    // path and `phantom` / `vault-mcp` will auto-unlock without typing.
     if !vault_exists(vault_dir).await {
         return Err("No vault found. Run 'phantom init' first.".into());
     }
 
     // Verify password first
-    let password = prompt_password("Enter master password to enable biometric: ")?;
+    let password = prompt_password("Enter master password to enable Keychain auto-unlock: ")?;
     let config = load_config(vault_dir).await?;
     let _ = load_vault(vault_dir, password.as_bytes(), &config).await
         .map_err(|_| "Invalid password")?;
 
-    // Enroll biometric
+    // Enroll into Keychain
     enroll_biometric(&vault_dir.to_string_lossy(), password.as_bytes())
-        .map_err(|e| format!("Failed to enable biometric: {}", e))?;
+        .map_err(|e| format!("Failed to enable Keychain auto-unlock: {}", e))?;
 
-    println!("Biometric unlock enabled!");
-    println!("You can now unlock with Touch ID.");
+    println!("Keychain auto-unlock enabled.");
+    if is_biometric_available() {
+        println!("Touch ID is present — your unlock will be biometric-protected.");
+    } else {
+        println!("Touch ID not detected. Keychain entry is still encrypted by your macOS login.");
+    }
+    println!("Future phantom commands and vault-mcp will unlock without prompting.");
 
     Ok(())
 }
@@ -524,6 +529,40 @@ fn unenroll_biometric(_vault_id: &str) -> Result<(), Box<dyn std::error::Error>>
     Ok(()) // Nothing to do
 }
 
+/// Retrieve the master password from the OS keychain if biometric is enrolled.
+/// Returns None if biometric isn't set up, the keychain entry is missing, or we're not on macOS.
+#[cfg(target_os = "macos")]
+fn get_master_from_keychain(vault_id: &str) -> Option<Vec<u8>> {
+    use security_framework::passwords::get_generic_password;
+    get_generic_password("com.phantomvault.master-key", vault_id).ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_master_from_keychain(_vault_id: &str) -> Option<Vec<u8>> {
+    None
+}
+
+/// Unified password retrieval — tries Keychain (biometric) first, falls back to interactive prompt.
+/// If PHANTOM_NO_BIOMETRIC=1 is set, skips Keychain entirely (forces password prompt).
+/// Caller can use the returned String's .as_bytes() interchangeably with the prior pattern.
+fn unlock_password(vault_dir: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
+    let opt_out = std::env::var("PHANTOM_NO_BIOMETRIC")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !opt_out {
+        let vault_id = vault_dir.to_string_lossy();
+        if let Some(pw_bytes) = get_master_from_keychain(&vault_id) {
+            // Keychain blob should be UTF-8 (set_generic_password stores the master password we typed).
+            if let Ok(s) = String::from_utf8(pw_bytes) {
+                return Ok(s);
+            }
+            // If somehow not UTF-8, fall through to prompt rather than panic.
+        }
+    }
+    prompt_password("Enter master password: ").map_err(|e| e.into())
+}
+
 async fn handle_add(
     vault_dir: &PathBuf,
     name: &str,
@@ -535,7 +574,7 @@ async fn handle_add(
         return Err("No vault found. Run 'phantom init' first.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -615,7 +654,7 @@ async fn handle_list(vault_dir: &PathBuf, namespace: Option<String>) -> Result<(
         return Ok(());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -702,7 +741,7 @@ async fn handle_show(
         return Err("No vault found. Run 'phantom init' first.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (vault_data, keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -754,7 +793,7 @@ async fn handle_get(
         return Err("No vault found. Run 'phantom init' first.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (vault_data, keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -781,7 +820,7 @@ async fn handle_remove(
         return Err("No vault found. Run 'phantom init' first.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -830,7 +869,7 @@ async fn handle_run(
         return Err("No vault found. Run 'phantom init' first.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (vault_data, keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -888,7 +927,7 @@ async fn handle_rotate(
         return Err("No vault found. Run 'phantom init' first.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -996,7 +1035,7 @@ async fn handle_audit(
         return Err("No vault found. Run 'phantom init' first.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (_vault_data, keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -1116,7 +1155,7 @@ async fn handle_namespace_list(vault_dir: &PathBuf) -> Result<(), Box<dyn std::e
         return Err("No vault found. Run 'phantom init' first.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -1161,7 +1200,7 @@ async fn handle_namespace_create(vault_dir: &PathBuf, name: &str) -> Result<(), 
         return Err("Namespace name can only contain alphanumeric characters, hyphens, and underscores.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -1198,7 +1237,7 @@ async fn handle_namespace_use(vault_dir: &PathBuf, name: &str) -> Result<(), Box
         return Ok(());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -1229,7 +1268,7 @@ async fn handle_namespace_delete(vault_dir: &PathBuf, name: &str) -> Result<(), 
         return Err("Cannot delete the default namespace.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -1296,7 +1335,7 @@ async fn handle_canary_create(
         None => CanaryPattern::AwsAccessKey,
     };
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -1339,7 +1378,7 @@ async fn handle_canary_list(vault_dir: &PathBuf) -> Result<(), Box<dyn std::erro
         return Err("No vault found. Run 'phantom init' first.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -1382,7 +1421,7 @@ async fn handle_canary_delete(
         return Err("No vault found. Run 'phantom init' first.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -1509,7 +1548,7 @@ async fn handle_import(
     }
 
     let content = std::fs::read_to_string(path)?;
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
@@ -1875,7 +1914,7 @@ async fn handle_edit(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Erro
         return Err("No vault found. Run 'phantom init' first.".into());
     }
 
-    let password = prompt_password("Enter master password: ")?;
+    let password = unlock_password(vault_dir)?;
     let config = load_config(vault_dir).await?;
     let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
 
