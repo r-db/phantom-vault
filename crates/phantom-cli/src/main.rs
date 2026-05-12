@@ -13,6 +13,8 @@ use vault_core::{
     VaultConfig,
 };
 
+mod interactive;
+
 #[derive(Parser)]
 #[command(name = "phantom")]
 #[command(author = "Riscent")]
@@ -169,6 +171,12 @@ Format: KEY=VALUE per line. Add/modify lines to add/update secrets.
 Remove a line to delete a secret. Lines starting with # are comments.")]
     Edit,
 
+    /// Change the master password (re-encrypts the vault)
+    #[command(after_help = "Prompts for the old password (or auto-unlocks from Keychain if enrolled),
+then for a new password twice. Re-encrypts the entire vault with the new key.
+If biometric was enrolled, the Keychain entry is automatically updated to the new password.")]
+    Passwd,
+
     /// Set spending caps on credentials — never wake up to a surprise bill
     #[command(after_help = "EXAMPLES:
   phantom guardrail set openai-key --cap 50 --provider openai
@@ -275,10 +283,13 @@ async fn main() {
 
     match cli.command {
         None => {
-            println!("Phantom Vault - secrets exist but are never observable");
-            println!();
-            println!("Run 'phantom --help' for usage information.");
-            println!("Run 'phantom init' to create a new vault.");
+            // Bare `phantom` → interactive wizard / menu
+            let vault_dir = default_vault_dir();
+            if let Err(e) = interactive::run_default(&vault_dir).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+            return;
         }
         Some(cmd) => {
             if let Err(e) = handle_command(cmd).await {
@@ -372,6 +383,9 @@ async fn handle_command(cmd: Commands) -> Result<(), Box<dyn std::error::Error>>
         Commands::Edit => {
             handle_edit(&vault_dir).await?;
         }
+        Commands::Passwd => {
+            handle_passwd(&vault_dir).await?;
+        }
         Commands::Guardrail { action } => match action {
             GuardrailCommands::Set { name, cap, provider, alert_at } => {
                 handle_guardrail_set(&vault_dir, &name, cap, &provider, alert_at).await?;
@@ -395,53 +409,69 @@ async fn handle_init(vault_dir: &PathBuf, enable_biometric: bool) -> Result<(), 
         return Ok(());
     }
 
-    println!("Creating new vault at {}", vault_dir.display());
-    println!();
-
-    // Check biometric availability
-    let biometric_available = is_biometric_available();
-    if enable_biometric && !biometric_available {
-        println!("Note: Biometric authentication not available on this system.");
-        println!("Continuing with password-only authentication.");
-        println!();
-    }
-
-    // Get password
-    let password = unlock_password(vault_dir)?;
+    // Prompt for + confirm password
+    let password = prompt_password("Enter master password: ")?;
     let confirm = prompt_password("Confirm master password: ")?;
-
     if password != confirm {
         return Err("Passwords do not match".into());
     }
 
+    create_vault_with_password(vault_dir, &password, enable_biometric).await?;
+    print_post_init_next_steps(enable_biometric);
+    Ok(())
+}
+
+/// Create a vault with a password that has already been collected.
+/// Reused by `handle_init` and by the interactive first-run wizard.
+pub(crate) async fn create_vault_with_password(
+    vault_dir: &PathBuf,
+    password: &str,
+    enable_biometric: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if password.len() < 8 {
         return Err("Password must be at least 8 characters".into());
+    }
+
+    println!("Creating new vault at {}", vault_dir.display());
+    println!();
+
+    let biometric_available = is_biometric_available();
+    if enable_biometric && !biometric_available {
+        println!("Note: Biometric hardware not detected. Keychain entry will be encrypted by your login.");
+        println!();
     }
 
     let config = VaultConfig::default();
     create_vault(vault_dir, password.as_bytes(), &config).await?;
 
-    // Enroll biometric if requested and available
-    if enable_biometric && biometric_available {
-        println!();
-        println!("Enabling biometric unlock...");
+    if enable_biometric {
+        println!("Enabling Keychain auto-unlock...");
         match enroll_biometric(&vault_dir.to_string_lossy(), password.as_bytes()) {
-            Ok(_) => println!("Touch ID enabled for vault unlock."),
-            Err(e) => println!("Note: Could not enable biometric: {}", e),
+            Ok(_) => {
+                if biometric_available {
+                    println!("Touch ID auto-unlock enabled.");
+                } else {
+                    println!("Keychain auto-unlock enabled.");
+                }
+            }
+            Err(e) => println!("Note: Could not enable auto-unlock: {}", e),
         }
+        println!();
     }
 
-    println!();
     println!("Vault created successfully!");
     println!();
-    println!("Next steps:");
-    println!("  phantom add <name>     Add a secret");
-    println!("  phantom mcp install    Enable Claude Code integration");
-    if !enable_biometric && biometric_available {
-        println!("  phantom biometric enable   Enable Touch ID unlock");
-    }
-
     Ok(())
+}
+
+fn print_post_init_next_steps(enable_biometric_already_done: bool) {
+    println!("Next steps:");
+    println!("  phantom                          Open the interactive menu (recommended)");
+    println!("  phantom edit                     Add many secrets at once (notepad mode)");
+    println!("  phantom mcp install              Wire your AI tools (Claude Code, Cursor, …)");
+    if !enable_biometric_already_done && is_biometric_available() {
+        println!("  phantom biometric enable         Enable Keychain auto-unlock (one-time)");
+    }
 }
 
 async fn handle_biometric_status() -> Result<(), Box<dyn std::error::Error>> {
@@ -517,7 +547,7 @@ async fn handle_biometric_disable(vault_dir: &PathBuf) -> Result<(), Box<dyn std
 
 // Biometric functions (platform-specific implementations in vault-native)
 #[cfg(target_os = "macos")]
-fn is_biometric_available() -> bool {
+pub(crate) fn is_biometric_available() -> bool {
     std::process::Command::new("bioutil")
         .args(["--availability"])
         .output()
@@ -526,7 +556,7 @@ fn is_biometric_available() -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn is_biometric_available() -> bool {
+pub(crate) fn is_biometric_available() -> bool {
     false
 }
 
@@ -557,7 +587,7 @@ struct BiometricStatus {
 }
 
 #[cfg(target_os = "macos")]
-fn enroll_biometric(vault_id: &str, password: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn enroll_biometric(vault_id: &str, password: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     use security_framework::passwords::{delete_generic_password, set_generic_password};
     let _ = delete_generic_password("com.phantomvault.master-key", vault_id);
     set_generic_password("com.phantomvault.master-key", vault_id, password)?;
@@ -565,7 +595,7 @@ fn enroll_biometric(vault_id: &str, password: &[u8]) -> Result<(), Box<dyn std::
 }
 
 #[cfg(not(target_os = "macos"))]
-fn enroll_biometric(_vault_id: &str, _password: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn enroll_biometric(_vault_id: &str, _password: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     Err("Biometric not available on this platform".into())
 }
 
@@ -584,7 +614,7 @@ fn unenroll_biometric(_vault_id: &str) -> Result<(), Box<dyn std::error::Error>>
 /// Retrieve the master password from the OS keychain if biometric is enrolled.
 /// Returns None if biometric isn't set up, the keychain entry is missing, or we're not on macOS.
 #[cfg(target_os = "macos")]
-fn get_master_from_keychain(vault_id: &str) -> Option<Vec<u8>> {
+pub(crate) fn get_master_from_keychain(vault_id: &str) -> Option<Vec<u8>> {
     use security_framework::passwords::get_generic_password;
     get_generic_password("com.phantomvault.master-key", vault_id).ok()
 }
@@ -597,7 +627,7 @@ fn get_master_from_keychain(_vault_id: &str) -> Option<Vec<u8>> {
 /// Unified password retrieval — tries Keychain (biometric) first, falls back to interactive prompt.
 /// If PHANTOM_NO_BIOMETRIC=1 is set, skips Keychain entirely (forces password prompt).
 /// Caller can use the returned String's .as_bytes() interchangeably with the prior pattern.
-fn unlock_password(vault_dir: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
+pub(crate) fn unlock_password(vault_dir: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
     let opt_out = std::env::var("PHANTOM_NO_BIOMETRIC")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -700,7 +730,7 @@ async fn handle_add(
     Ok(())
 }
 
-async fn handle_list(vault_dir: &PathBuf, namespace: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn handle_list(vault_dir: &PathBuf, namespace: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     if !vault_exists(vault_dir).await {
         println!("No vault found. Run 'phantom init' first.");
         return Ok(());
@@ -1649,7 +1679,7 @@ async fn handle_import(
     Ok(())
 }
 
-async fn handle_mcp_install() -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn handle_mcp_install() -> Result<(), Box<dyn std::error::Error>> {
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
 
     // Find the vault-mcp binary
@@ -1961,7 +1991,7 @@ fn mask_value(value: &str) -> String {
     }
 }
 
-async fn handle_edit(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn handle_edit(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     if !vault_exists(vault_dir).await {
         return Err("No vault found. Run 'phantom init' first.".into());
     }
@@ -2152,6 +2182,81 @@ fn secure_shred(path: &PathBuf) -> std::io::Result<()> {
     Ok(())
 }
 
+// === phantom passwd: rotate the master password ===
+
+pub(crate) async fn handle_passwd(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    println!("Rotate master password");
+    println!("This re-encrypts the entire vault with a new key.");
+    println!();
+
+    // Old password — accept Keychain auto-unlock OR an interactive prompt.
+    // (We avoid `unlock_password` here because that path is silent on success;
+    //  for password rotation the user should know explicitly when the old
+    //  password is being read from Keychain vs typed.)
+    let old_password: String = {
+        let vault_id = vault_dir.to_string_lossy();
+        match get_master_from_keychain(&vault_id) {
+            Some(bytes) => match String::from_utf8(bytes) {
+                Ok(s) => {
+                    println!("Using current master password from macOS Keychain.");
+                    s
+                }
+                Err(_) => prompt_password("Enter current master password: ")?,
+            },
+            None => prompt_password("Enter current master password: ")?,
+        }
+    };
+
+    let new_password = prompt_password("New master password: ")?;
+    let confirm = prompt_password("Confirm new master password: ")?;
+    if new_password != confirm {
+        return Err("New passwords do not match.".into());
+    }
+    if new_password.len() < 8 {
+        return Err("New password must be at least 8 characters.".into());
+    }
+    if new_password == old_password {
+        return Err("New password is the same as the old one.".into());
+    }
+
+    // Load vault data with the old password (this also verifies it works)
+    let config = load_config(vault_dir).await?;
+    let (vault_data, _keys, _salt) =
+        load_vault(vault_dir, old_password.as_bytes(), &config).await?;
+
+    // Re-encrypt with the new password via vault-core
+    vault_core::storage::change_password(
+        vault_dir,
+        &vault_data,
+        old_password.as_bytes(),
+        new_password.as_bytes(),
+        &config,
+    )
+    .await?;
+
+    // Update Keychain entry if it was enrolled with the old password
+    let vault_id = vault_dir.to_string_lossy();
+    if get_master_from_keychain(&vault_id).is_some() {
+        match enroll_biometric(&vault_id, new_password.as_bytes()) {
+            Ok(_) => println!("Keychain entry updated to new password."),
+            Err(e) => println!(
+                "Warning: vault re-encrypted, but Keychain entry could not be updated ({}). \
+                 Run `phantom biometric enable` manually to refresh.",
+                e
+            ),
+        }
+    }
+
+    println!();
+    println!("Master password rotated successfully.");
+    println!("All future unlocks require the new password.");
+    Ok(())
+}
+
 // === Guardrail handlers ===
 
 const KNOWN_PROVIDERS: &[&str] = &[
@@ -2159,7 +2264,7 @@ const KNOWN_PROVIDERS: &[&str] = &[
     "elevenlabs", "deepgram", "cohere", "mistral", "openrouter", "manual",
 ];
 
-async fn handle_guardrail_set(
+pub(crate) async fn handle_guardrail_set(
     vault_dir: &PathBuf,
     name: &str,
     cap: f64,

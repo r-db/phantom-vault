@@ -241,6 +241,57 @@ async fn write_vault_file(path: &Path, encrypted: &EncryptedVault) -> VaultResul
     Ok(())
 }
 
+/// Rotate the master password.
+///
+/// Verifies the old password decrypts the vault, derives new keys from the new password,
+/// then **re-encrypts every individual secret value** with the new keys before saving.
+/// This is critical: a naive re-save only re-encrypts the outer blob; the inner
+/// per-secret ciphertexts must be decrypted with the OLD keys and re-encrypted with
+/// the NEW keys, or `phantom get` will fail with "wrong password" after rotation.
+///
+/// The `vault_data` argument is ignored except for its tool_bindings / canaries /
+/// guardrails (we always reload the canonical version from disk to ensure we have
+/// the encrypted_values that pair with the on-disk salt). The caller is responsible
+/// for updating any Keychain entry that cached the old password.
+///
+/// Returns the new derived keys so the caller can swap them without reloading.
+pub async fn change_password(
+    vault_dir: &Path,
+    _vault_data: &VaultData,
+    old_password: &[u8],
+    new_password: &[u8],
+    config: &VaultConfig,
+) -> VaultResult<DerivedKeys> {
+    // 1. Load + verify with old password. This gives us the *current* vault_data
+    //    and the *current* keys that match what's encrypted on disk.
+    let (mut vault_data, old_keys, _old_salt) =
+        load_vault(vault_dir, old_password, config).await?;
+
+    // 2. Derive new keys from the new password + a fresh salt
+    let new_salt = generate_salt();
+    let new_keys = DerivedKeys::derive(new_password, &new_salt, config)?;
+
+    // 3. Re-encrypt every individual secret value: decrypt with old_keys, re-encrypt with new_keys.
+    //    Without this, the outer blob would be decryptable with the new password but
+    //    individual values inside would still need the old keys to decrypt — broken.
+    let mut reencrypted: std::collections::HashMap<uuid::Uuid, crate::models::EncryptedValue> =
+        std::collections::HashMap::with_capacity(vault_data.encrypted_values.len());
+    for (id, encrypted_value) in &vault_data.encrypted_values {
+        let plaintext = old_keys.decrypt(&encrypted_value.ciphertext, &encrypted_value.nonce)?;
+        let (ciphertext, nonce) = new_keys.encrypt(&plaintext)?;
+        reencrypted.insert(
+            *id,
+            crate::models::EncryptedValue { nonce, ciphertext },
+        );
+    }
+    vault_data.encrypted_values = reencrypted;
+
+    // 4. Save with new keys + new salt + freshly re-encrypted values
+    save_vault(vault_dir, &vault_data, &new_keys, &new_salt).await?;
+
+    Ok(new_keys)
+}
+
 /// Load vault configuration
 pub async fn load_config(base_dir: &Path) -> VaultResult<VaultConfig> {
     let config_path = config_file_path(base_dir);

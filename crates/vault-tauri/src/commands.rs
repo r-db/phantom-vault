@@ -530,7 +530,8 @@ pub async fn save_vault_state(
     storage::save_vault(vault_dir, vault_data, keys, salt).await
 }
 
-/// Change the master password
+/// Change the master password — thin wrapper over `vault_core::change_password`.
+/// Kept for API stability of callers that depended on this location.
 pub async fn change_password(
     vault_dir: &PathBuf,
     vault_data: &VaultData,
@@ -538,17 +539,14 @@ pub async fn change_password(
     new_password: &str,
     config: &VaultConfig,
 ) -> VaultResult<DerivedKeys> {
-    // Verify old password works
-    let _ = storage::load_vault(vault_dir, old_password.as_bytes(), config).await?;
-
-    // Generate new salt and derive new keys
-    let new_salt = vault_core::crypto::generate_salt();
-    let new_keys = DerivedKeys::derive(new_password.as_bytes(), &new_salt, config)?;
-
-    // Save with new encryption
-    storage::save_vault(vault_dir, vault_data, &new_keys, &new_salt).await?;
-
-    Ok(new_keys)
+    storage::change_password(
+        vault_dir,
+        vault_data,
+        old_password.as_bytes(),
+        new_password.as_bytes(),
+        config,
+    )
+    .await
 }
 
 /// Load vault configuration

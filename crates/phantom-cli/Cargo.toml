@@ -1,6 +1,6 @@
 [package]
 name = "phantom-cli"
-version = "1.7.1"
+version = "1.8.0"
 edition = "2021"
 description = "Phantom Vault CLI - secure secret management for AI agents"
 authors = ["Riscent"]
@@ -20,8 +20,11 @@ vault-core = { path = "../vault-core" }
 # Async runtime
 tokio = { workspace = true }
 
-# Password input
+# Password input (TTY-only secure read)
 rpassword = "7.3"
+
+# Interactive wizard / menu prompts for `phantom` (no-args) mode
+inquire = "0.7"
 
 # Directories
 dirs = { workspace = true }
