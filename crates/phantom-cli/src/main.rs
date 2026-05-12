@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use vault_core::{
     create_vault, default_vault_dir, load_config, load_vault, save_vault,
-    vault_exists, vault_file_path, EncryptedValue, SecretEntry, SecretType,
+    vault_exists, vault_file_path, EncryptedValue, Guardrail, SecretEntry, SecretType,
     VaultConfig,
 };
 
@@ -167,6 +167,20 @@ enum Commands {
 Format: KEY=VALUE per line. Add/modify lines to add/update secrets.
 Remove a line to delete a secret. Lines starting with # are comments.")]
     Edit,
+
+    /// Set spending caps on credentials — never wake up to a surprise bill
+    #[command(after_help = "EXAMPLES:
+  phantom guardrail set openai-key --cap 50 --provider openai
+  phantom guardrail list
+  phantom guardrail status
+  phantom guardrail remove openai-key
+
+Caps are monthly USD amounts. Providers polled at `phantom guardrail status`.
+Soft alert at 80% (configurable via --alert-at).")]
+    Guardrail {
+        #[command(subcommand)]
+        action: GuardrailCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -214,6 +228,33 @@ enum McpCommands {
     /// Uninstall MCP server
     Uninstall,
     /// Show MCP server status
+    Status,
+}
+
+#[derive(Subcommand)]
+enum GuardrailCommands {
+    /// Set or update a guardrail on a secret
+    Set {
+        /// Reference name of the secret (must already exist in vault)
+        name: String,
+        /// Monthly cap in USD
+        #[arg(long)]
+        cap: f64,
+        /// Provider — openai, anthropic, gemini, stripe, twilio, elevenlabs, deepgram, or "manual"
+        #[arg(long)]
+        provider: String,
+        /// Alert threshold percentage (default 80)
+        #[arg(long, default_value_t = 80)]
+        alert_at: u8,
+    },
+    /// List all configured guardrails
+    List,
+    /// Remove a guardrail (the secret itself stays)
+    Remove {
+        /// Reference name of the guarded secret
+        name: String,
+    },
+    /// Show current usage vs cap for every guardrail (polls providers where supported)
     Status,
 }
 
@@ -330,6 +371,16 @@ async fn handle_command(cmd: Commands) -> Result<(), Box<dyn std::error::Error>>
         Commands::Edit => {
             handle_edit(&vault_dir).await?;
         }
+        Commands::Guardrail { action } => match action {
+            GuardrailCommands::Set { name, cap, provider, alert_at } => {
+                handle_guardrail_set(&vault_dir, &name, cap, &provider, alert_at).await?;
+            }
+            GuardrailCommands::List => handle_guardrail_list(&vault_dir).await?,
+            GuardrailCommands::Remove { name } => {
+                handle_guardrail_remove(&vault_dir, &name).await?;
+            }
+            GuardrailCommands::Status => handle_guardrail_status(&vault_dir).await?,
+        },
     }
 
     Ok(())
@@ -2098,6 +2149,187 @@ fn secure_shred(path: &PathBuf) -> std::io::Result<()> {
     }
     std::fs::remove_file(path)?;
     Ok(())
+}
+
+// === Guardrail handlers ===
+
+const KNOWN_PROVIDERS: &[&str] = &[
+    "openai", "anthropic", "gemini", "stripe", "twilio",
+    "elevenlabs", "deepgram", "cohere", "mistral", "openrouter", "manual",
+];
+
+async fn handle_guardrail_set(
+    vault_dir: &PathBuf,
+    name: &str,
+    cap: f64,
+    provider: &str,
+    alert_at: u8,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if cap <= 0.0 {
+        return Err("Cap must be positive USD".into());
+    }
+    if alert_at == 0 || alert_at > 100 {
+        return Err("alert-at must be between 1 and 100".into());
+    }
+    let provider_lc = provider.to_lowercase();
+    if !KNOWN_PROVIDERS.contains(&provider_lc.as_str()) {
+        return Err(format!(
+            "Unknown provider '{}'. Known: {}",
+            provider,
+            KNOWN_PROVIDERS.join(", ")
+        )
+        .into());
+    }
+
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+
+    let password = unlock_password(vault_dir)?;
+    let config = load_config(vault_dir).await?;
+    let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    if vault_data.find_by_reference(name).is_none() {
+        return Err(format!(
+            "Secret '{}' not found in vault. Add it first with: phantom add {}",
+            name, name
+        )
+        .into());
+    }
+
+    // If a guardrail already exists for this secret, update it; otherwise create new.
+    if let Some(existing) = vault_data
+        .guardrails
+        .iter_mut()
+        .find(|g| g.secret_ref == name)
+    {
+        existing.cap_usd = cap;
+        existing.provider = provider_lc;
+        existing.alert_at_pct = alert_at;
+        println!("Updated guardrail on '{}' — cap ${:.2}/month, alert at {}%", name, cap, alert_at);
+    } else {
+        let mut g = Guardrail::new(name.to_string(), provider_lc, cap);
+        g.alert_at_pct = alert_at;
+        vault_data.guardrails.push(g);
+        println!("Set guardrail on '{}' — cap ${:.2}/month, alert at {}%", name, cap, alert_at);
+    }
+
+    save_vault(vault_dir, &vault_data, &keys, &salt).await?;
+    Ok(())
+}
+
+async fn handle_guardrail_list(
+    vault_dir: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+    let password = unlock_password(vault_dir)?;
+    let config = load_config(vault_dir).await?;
+    let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    if vault_data.guardrails.is_empty() {
+        println!("No guardrails set.");
+        println!();
+        println!("Add one: phantom guardrail set <secret-name> --cap 50 --provider openai");
+        return Ok(());
+    }
+
+    println!("{:<24} {:<12} {:>10} {:>6}", "SECRET", "PROVIDER", "CAP", "ALERT");
+    println!("{}", "─".repeat(58));
+    for g in &vault_data.guardrails {
+        println!(
+            "{:<24} {:<12} ${:>8.2} {:>5}%",
+            truncate(&g.secret_ref, 24),
+            truncate(&g.provider, 12),
+            g.cap_usd,
+            g.alert_at_pct
+        );
+    }
+    println!();
+    println!("Run 'phantom guardrail status' to poll usage and see current % of cap.");
+    Ok(())
+}
+
+async fn handle_guardrail_remove(
+    vault_dir: &PathBuf,
+    name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+    let password = unlock_password(vault_dir)?;
+    let config = load_config(vault_dir).await?;
+    let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    let before = vault_data.guardrails.len();
+    vault_data.guardrails.retain(|g| g.secret_ref != name);
+    if vault_data.guardrails.len() == before {
+        return Err(format!("No guardrail found on '{}'", name).into());
+    }
+    save_vault(vault_dir, &vault_data, &keys, &salt).await?;
+    println!("Removed guardrail on '{}'. The secret itself is unchanged.", name);
+    Ok(())
+}
+
+async fn handle_guardrail_status(
+    vault_dir: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !vault_exists(vault_dir).await {
+        return Err("No vault found. Run 'phantom init' first.".into());
+    }
+    let password = unlock_password(vault_dir)?;
+    let config = load_config(vault_dir).await?;
+    let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+
+    if vault_data.guardrails.is_empty() {
+        println!("No guardrails set.");
+        return Ok(());
+    }
+
+    // For now: provider polling is not yet wired (research in flight for which providers
+    // expose usage via user-level API keys). Print cached values + last poll time.
+    // When adapters land in v1.7.x+, this handler will call poll_provider() per guardrail.
+    println!(
+        "{:<22} {:<10} {:>9} {:>9} {:>7} {:<14}",
+        "SECRET", "PROVIDER", "CAP", "USED", "PCT", "STATUS"
+    );
+    println!("{}", "─".repeat(76));
+
+    for g in &vault_data.guardrails {
+        let pct = g.pct_used();
+        let status = if g.last_polled_at.is_none() {
+            "never polled".to_string()
+        } else if g.is_over_cap() {
+            "OVER CAP".to_string()
+        } else if g.is_alerting() {
+            "ALERTING".to_string()
+        } else {
+            "ok".to_string()
+        };
+        println!(
+            "{:<22} {:<10} ${:>7.2} ${:>7.2} {:>6.1}% {:<14}",
+            truncate(&g.secret_ref, 22),
+            truncate(&g.provider, 10),
+            g.cap_usd,
+            g.current_usd,
+            pct,
+            status
+        );
+    }
+
+    println!();
+    println!("Note: provider polling not yet wired in v1.6.x — values shown are cached/zero.");
+    println!("Provider adapters land in v1.7.x once we confirm which providers expose usage to user-level keys.");
+    Ok(())
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max - 1])
+    }
 }
 
 fn which_mcp_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {

@@ -236,6 +236,11 @@ pub struct VaultData {
     /// Canary (honeypot) secrets for detecting exfiltration
     #[serde(default)]
     pub canaries: Vec<CanarySecret>,
+
+    /// Spending guardrails per secret — periodically polled against provider usage APIs
+    /// to alert/lock before users wake up to a surprise bill.
+    #[serde(default)]
+    pub guardrails: Vec<Guardrail>,
 }
 
 impl VaultData {
@@ -393,6 +398,79 @@ pub struct CanarySecret {
 
     /// Last time an alert was triggered
     pub last_alert_at: Option<DateTime<Utc>>,
+}
+
+/// A spending cap on a secret (typically an AI provider API key).
+/// Periodically polled against the provider's usage API; warns or locks the key
+/// when usage approaches the configured monthly cap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Guardrail {
+    /// Reference name of the secret this guards — must match an entry.reference
+    pub secret_ref: String,
+
+    /// Provider identifier — "openai", "anthropic", "gemini", "stripe", "twilio",
+    /// "elevenlabs", "deepgram", or "manual" for user-reported usage
+    pub provider: String,
+
+    /// Monthly cap in USD
+    pub cap_usd: f64,
+
+    /// Latest observed spend in USD (cached from last successful poll)
+    #[serde(default)]
+    pub current_usd: f64,
+
+    /// When we last polled the provider successfully (None = never polled yet)
+    #[serde(default)]
+    pub last_polled_at: Option<DateTime<Utc>>,
+
+    /// Last poll error message, if the most recent poll failed
+    #[serde(default)]
+    pub last_error: Option<String>,
+
+    /// Soft-alert threshold as a percentage of cap (default 80%)
+    #[serde(default = "default_alert_pct")]
+    pub alert_at_pct: u8,
+
+    /// When this guardrail was created
+    pub created_at: DateTime<Utc>,
+}
+
+fn default_alert_pct() -> u8 {
+    80
+}
+
+impl Guardrail {
+    pub fn new(secret_ref: String, provider: String, cap_usd: f64) -> Self {
+        Self {
+            secret_ref,
+            provider,
+            cap_usd,
+            current_usd: 0.0,
+            last_polled_at: None,
+            last_error: None,
+            alert_at_pct: 80,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Percentage of cap currently used. Returns 0.0 if cap is 0 (defensive).
+    pub fn pct_used(&self) -> f64 {
+        if self.cap_usd <= 0.0 {
+            0.0
+        } else {
+            (self.current_usd / self.cap_usd) * 100.0
+        }
+    }
+
+    /// True if usage has crossed the soft alert threshold
+    pub fn is_alerting(&self) -> bool {
+        self.pct_used() >= self.alert_at_pct as f64
+    }
+
+    /// True if usage has met or exceeded the cap
+    pub fn is_over_cap(&self) -> bool {
+        self.current_usd >= self.cap_usd
+    }
 }
 
 impl CanarySecret {
