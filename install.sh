@@ -116,15 +116,58 @@ echo "✓ Installed phantom + vault-mcp to $install_dir"
 "$install_dir/phantom" --version
 
 if [ "${needs_path_warning:-0}" = "1" ]; then
-  # ANSI bold yellow if stdout is a terminal, plain otherwise
-  if [ -t 1 ]; then YELLOW='\033[1;33m'; NC='\033[0m'; else YELLOW=''; NC=''; fi
-  printf "\n${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-  printf "${YELLOW}  ⚠  ACTION REQUIRED — $install_dir is NOT on your PATH${NC}\n"
-  printf "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-  printf "${YELLOW}  Without this, 'phantom' won't be found.${NC}\n"
-  printf "${YELLOW}  Add to your shell profile (~/.zshrc or ~/.bashrc):${NC}\n\n"
-  printf "      ${YELLOW}export PATH=\"\$HOME/.local/bin:\$PATH\"${NC}\n\n"
-  printf "${YELLOW}  Then run:  source ~/.zshrc   (or open a new terminal)${NC}\n\n"
+  # Auto-append the PATH line to the user's shell config so they don't have
+  # to do it manually. Pattern follows rustup, volta, nvm, etc.
+  shell_name="$(basename "${SHELL:-/bin/zsh}")"
+  case "$shell_name" in
+    zsh)
+      rc_file="$HOME/.zshrc"
+      path_line='export PATH="$HOME/.local/bin:$PATH"'
+      ;;
+    bash)
+      # macOS reads ~/.bash_profile for login shells; Linux uses ~/.bashrc.
+      if [ "$(uname -s)" = "Darwin" ] && [ -f "$HOME/.bash_profile" ]; then
+        rc_file="$HOME/.bash_profile"
+      else
+        rc_file="$HOME/.bashrc"
+      fi
+      path_line='export PATH="$HOME/.local/bin:$PATH"'
+      ;;
+    fish)
+      rc_file="$HOME/.config/fish/config.fish"
+      mkdir -p "$(dirname "$rc_file")"
+      path_line='set -gx PATH "$HOME/.local/bin" $PATH'
+      ;;
+    *)
+      rc_file="$HOME/.profile"
+      path_line='export PATH="$HOME/.local/bin:$PATH"'
+      ;;
+  esac
+
+  # Don't duplicate — check if the line (or any reference to ~/.local/bin) is already there
+  if [ -f "$rc_file" ] && grep -q '\.local/bin' "$rc_file" 2>/dev/null; then
+    auto_added=0
+  else
+    {
+      echo ""
+      echo "# Added by Phantom Vault installer ($(date +%Y-%m-%d))"
+      echo "$path_line"
+    } >> "$rc_file"
+    auto_added=1
+  fi
+
+  # ANSI green if stdout is a terminal, plain otherwise
+  if [ -t 1 ]; then GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'; else GREEN=''; YELLOW=''; BOLD=''; NC=''; fi
+
+  if [ "$auto_added" = "1" ]; then
+    printf "\n${GREEN}✓ Added ${install_dir} to your PATH in ${rc_file}${NC}\n\n"
+    printf "${BOLD}To use 'phantom' right now:${NC}\n"
+    printf "  source $rc_file\n\n"
+    printf "${BOLD}Or just open a new terminal — phantom is ready.${NC}\n\n"
+  else
+    printf "\n${YELLOW}Note: ${install_dir} is already referenced in ${rc_file}.${NC}\n"
+    printf "${YELLOW}If 'phantom' isn't found, restart your shell or run:  source ${rc_file}${NC}\n\n"
+  fi
 fi
 
 echo
