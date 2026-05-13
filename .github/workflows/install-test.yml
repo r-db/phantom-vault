@@ -44,11 +44,7 @@ jobs:
             runner: macos-13
             shell: bash
 
-          # Linux x64 — /usr/local/bin exists, may need sudo.
-          - scenario: ubuntu-22
-            runner: ubuntu-22.04
-            shell: bash
-
+          # Linux x64 — /usr/local/bin exists, runner has passwordless sudo.
           - scenario: ubuntu-latest
             runner: ubuntu-latest
             shell: bash
@@ -69,7 +65,7 @@ jobs:
         run: ${{ matrix.pre }}
 
       - name: Run installer
-        run: bash install.sh
+        run: bash -x install.sh
         env:
           # CI runners are non-interactive — sudo NOPASSWD is preconfigured.
           PHANTOM_NO_SUDO: '0'

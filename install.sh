@@ -58,14 +58,23 @@ suffix="${os}-${arch}"
 # So even when this script is piped from curl, sudo prompts work correctly
 # as long as the user's terminal is attached.
 
-if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+# PHANTOM_NO_SUDO=1 means "user scope, no system writes at all" — go straight
+# to ~/.local/bin regardless of what other directories happen to be writable.
+if [ "${PHANTOM_NO_SUDO:-0}" = "1" ]; then
+  install_dir="$HOME/.local/bin"
+  sudo_cmd=""
+  mkdir -p "$install_dir"
+  if ! echo ":$PATH:" | grep -q ":$install_dir:"; then
+    needs_path_warning=1
+  fi
+elif [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
   install_dir="/usr/local/bin"
   sudo_cmd=""
 elif [ -d "/opt/homebrew/bin" ] && [ -w "/opt/homebrew/bin" ]; then
   # Homebrew on Apple Silicon — already on default PATH, no sudo needed.
   install_dir="/opt/homebrew/bin"
   sudo_cmd=""
-elif command -v sudo >/dev/null 2>&1 && { [ -t 0 ] || [ -t 1 ]; } && [ "${PHANTOM_NO_SUDO:-0}" != "1" ]; then
+elif command -v sudo >/dev/null 2>&1 && { [ -t 0 ] || [ -t 1 ]; }; then
   install_dir="/usr/local/bin"
   sudo_cmd="sudo"
   if [ ! -d "$install_dir" ]; then
@@ -76,7 +85,7 @@ elif command -v sudo >/dev/null 2>&1 && { [ -t 0 ] || [ -t 1 ]; } && [ "${PHANTO
   echo "→ Installing to /usr/local/bin (system PATH) — sudo password may be required..."
   sudo -v
 else
-  # Last resort: user-scope install. Will require `source` or a new terminal.
+  # No tty + no sudo: fall back to user scope.
   install_dir="$HOME/.local/bin"
   sudo_cmd=""
   mkdir -p "$install_dir"
