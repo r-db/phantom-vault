@@ -41,13 +41,21 @@ fi
 suffix="${os}-${arch}"
 
 # --- Decide install location ---------------------------------------------------
-if [ -w "/usr/local/bin" ]; then
+# Priority:
+#   1. /usr/local/bin if it EXISTS AND is writable (no sudo needed)
+#   2. /usr/local/bin if it EXISTS AND sudo is available AND user didn't opt out
+#   3. ~/.local/bin (always works, no sudo, user-scope)
+# We check existence explicitly because Apple Silicon Macs without Homebrew
+# don't ship /usr/local/bin by default — the old code would `sudo mv` into
+# a non-existent target and fail.
+if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
   install_dir="/usr/local/bin"
   sudo_cmd=""
-elif command -v sudo >/dev/null 2>&1 && [ "${PHANTOM_NO_SUDO:-0}" != "1" ]; then
+elif [ -d "/usr/local/bin" ] && command -v sudo >/dev/null 2>&1 && [ "${PHANTOM_NO_SUDO:-0}" != "1" ]; then
   install_dir="/usr/local/bin"
   sudo_cmd="sudo"
 else
+  # Fallback: user-scope install. Always works on any system.
   install_dir="$HOME/.local/bin"
   sudo_cmd=""
   mkdir -p "$install_dir"
