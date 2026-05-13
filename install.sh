@@ -41,21 +41,42 @@ fi
 suffix="${os}-${arch}"
 
 # --- Decide install location ---------------------------------------------------
-# Priority:
-#   1. /usr/local/bin if it EXISTS AND is writable (no sudo needed)
-#   2. /usr/local/bin if it EXISTS AND sudo is available AND user didn't opt out
-#   3. ~/.local/bin (always works, no sudo, user-scope)
-# We check existence explicitly because Apple Silicon Macs without Homebrew
-# don't ship /usr/local/bin by default — the old code would `sudo mv` into
-# a non-existent target and fail.
+# Goal: zero-touch UX. After install, `phantom` must work in the SAME terminal
+# the user pasted the curl one-liner into. That rules out anything that needs a
+# new shell or a manual `source`. /usr/local/bin is in macOS default PATH
+# (/etc/paths) and in every Linux default PATH, so installing there means
+# `phantom` is callable immediately — no PATH edits, no new terminal.
+#
+# Priority — pick the first that gives zero-touch UX, falling back to sudo only
+# when no in-PATH writable directory exists:
+#   1. /usr/local/bin   writable (no sudo)        Intel Macs / pre-existing perms
+#   2. /opt/homebrew/bin writable (no sudo)       Apple Silicon Homebrew users
+#   3. /usr/local/bin via sudo (creates if needed) one-time password prompt
+#   4. ~/.local/bin                                PHANTOM_NO_SUDO=1 / no tty
+#
+# Note on sudo + curl|bash: sudo reads the password from /dev/tty, not stdin.
+# So even when this script is piped from curl, sudo prompts work correctly
+# as long as the user's terminal is attached.
+
 if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
   install_dir="/usr/local/bin"
   sudo_cmd=""
-elif [ -d "/usr/local/bin" ] && command -v sudo >/dev/null 2>&1 && [ "${PHANTOM_NO_SUDO:-0}" != "1" ]; then
+elif [ -d "/opt/homebrew/bin" ] && [ -w "/opt/homebrew/bin" ]; then
+  # Homebrew on Apple Silicon — already on default PATH, no sudo needed.
+  install_dir="/opt/homebrew/bin"
+  sudo_cmd=""
+elif command -v sudo >/dev/null 2>&1 && { [ -t 0 ] || [ -t 1 ]; } && [ "${PHANTOM_NO_SUDO:-0}" != "1" ]; then
   install_dir="/usr/local/bin"
   sudo_cmd="sudo"
+  if [ ! -d "$install_dir" ]; then
+    echo "→ /usr/local/bin doesn't exist yet — creating it (one-time, requires sudo)..."
+    sudo mkdir -p "$install_dir"
+    sudo chmod 0755 "$install_dir"
+  fi
+  echo "→ Installing to /usr/local/bin (system PATH) — sudo password may be required..."
+  sudo -v
 else
-  # Fallback: user-scope install. Always works on any system.
+  # Last resort: user-scope install. Will require `source` or a new terminal.
   install_dir="$HOME/.local/bin"
   sudo_cmd=""
   mkdir -p "$install_dir"
@@ -112,8 +133,13 @@ $sudo_cmd mv "$tmp/vault-mcp" "$install_dir/vault-mcp"
 
 # --- Done ----------------------------------------------------------------------
 echo
-echo "✓ Installed phantom + vault-mcp to $install_dir"
+if [ -t 1 ]; then GREEN='\033[0;32m'; BOLD='\033[1m'; NC='\033[0m'; else GREEN=''; BOLD=''; NC=''; fi
+printf "${GREEN}✓ Installed phantom + vault-mcp to $install_dir${NC}\n"
 "$install_dir/phantom" --version
+# Confirm the binary is callable from THIS shell, not just present on disk.
+if echo ":$PATH:" | grep -q ":$install_dir:" && command -v phantom >/dev/null 2>&1; then
+  printf "\n${BOLD}phantom is ready. Type:${NC}  phantom\n\n"
+fi
 
 if [ "${needs_path_warning:-0}" = "1" ]; then
   # Auto-append the PATH line to the user's shell config so they don't have
