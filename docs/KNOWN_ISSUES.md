@@ -1,7 +1,7 @@
 # Known Issues - Phantom Vault
 
-**Version:** 1.4.0
-**Last Updated:** 2026-03-05
+**Version:** 1.8.2
+**Last Updated:** 2026-05-15
 **Status:** PRODUCTION READY
 
 ---
@@ -10,12 +10,40 @@
 
 | Severity | Total | Fixed | Open |
 |----------|-------|-------|------|
-| CRITICAL | 1 | 1 | 0 |
+| CRITICAL | 3 | 3 | 0 |
 | HIGH | 3 | 3 | 0 |
 | MEDIUM | 5 | 4 | 1 |
 | LOW | 5 | 4 | 1 |
 
-**Production Ready:** YES (schema migration and concurrent access remain as documented limitations)
+**Production Ready:** YES. Agent-friendly path (biometric unlock without TTY) confirmed working as of v1.8.2.
+
+---
+
+## Critical Issues
+
+### Biometric detection broken on every Mac - FIXED in v1.8.2
+
+**File:** `crates/phantom-cli/src/main.rs:550-556`
+**Status:** FIXED
+**Fixed in:** v1.8.2 (commit `274e2e3`)
+
+**Description:**
+`is_biometric_available()` called `bioutil --availability`. That flag does NOT exist in macOS `bioutil(8)`. The command always exited non-zero, so the function returned `false` on every Mac — including ones with working TouchID. Downstream consequence: `phantom biometric status` reported "No biometric hardware detected" regardless of hardware, blocking the entire biometric unlock path. This effectively forced all callers (including automated agents) onto the password-via-/dev/tty path. Agents have no /dev/tty in subshells, so the vault was unreachable for any non-human caller — a direct contradiction of Phantom Vault's design intent.
+
+**Fix:**
+Use `bioutil -r` (a real documented flag that reads biometric settings) and parse stdout for `"Effective biometrics for unlock: 1"` to confirm TouchID is actually usable. Verified on Apple Silicon Mac Mini.
+
+### Release workflow asset-name mismatch - FIXED in v1.8.2
+
+**File:** `.github/workflows/release.yml`
+**Status:** FIXED
+**Fixed in:** v1.8.2 (commit `0070bba`)
+
+**Description:**
+The `phantom update` command in `crates/phantom-cli/src/main.rs:1875-1878` constructs download URLs as `phantom-<arch>-<os_target>` using Rust target triple form: `phantom-aarch64-apple-darwin`, `phantom-x86_64-apple-darwin`, `phantom-x86_64-unknown-linux-gnu`. The release workflow uploaded assets with friendly names instead: `phantom-macos-arm64`, `phantom-macos-x64`, `phantom-linux-x64`. The names didn't match, so `phantom update` would attempt the download and 404. The bug was masked because no user attempted an update between v1.7.1 and v1.8.0; the failure mode only surfaced once a third release was attempted.
+
+**Fix:**
+Release workflow now uploads BOTH name patterns. Friendly names retained for documentation; Rust-target-triple names added so existing binaries' update commands find them.
 
 ---
 
