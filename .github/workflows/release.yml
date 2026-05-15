@@ -57,10 +57,22 @@ jobs:
 
       - name: Rename binaries with arch suffix
         run: |
+          # FIX (2026-05-15): also produce assets with the Rust-target-triple naming
+          # that the source code expects. The CLI's `phantom update` command at
+          # crates/phantom-cli/src/main.rs:1875-1878 downloads from
+          # phantom-<arch>-<os_target> where os_target ∈ {apple-darwin, unknown-linux-gnu}
+          # and arch ∈ {aarch64, x86_64} — but this workflow previously only uploaded
+          # the friendly-named macos-arm64/macos-x64 assets, so `phantom update` would
+          # try the wrong URL and fail. We now upload BOTH name patterns so existing
+          # binaries (which have the old URL pattern compiled in) can still update.
           mkdir -p artifacts
           cp target/${{ matrix.target }}/release/phantom artifacts/phantom-${{ matrix.suffix }}
           cp target/${{ matrix.target }}/release/vault-mcp artifacts/vault-mcp-${{ matrix.suffix }}
+          # Source-code-compatible aliases (Rust target triple form)
+          cp target/${{ matrix.target }}/release/phantom artifacts/phantom-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/vault-mcp artifacts/vault-mcp-${{ matrix.target }}
           chmod +x artifacts/phantom-${{ matrix.suffix }} artifacts/vault-mcp-${{ matrix.suffix }}
+          chmod +x artifacts/phantom-${{ matrix.target }} artifacts/vault-mcp-${{ matrix.target }}
 
       - name: Smoke-test the binary (skip on cross-compiled x64-on-arm64)
         if: matrix.target != 'x86_64-apple-darwin'
@@ -125,3 +137,9 @@ jobs:
             dist/SHA256SUMS-macos-arm64.txt
             dist/SHA256SUMS-macos-x64.txt
             dist/SHA256SUMS-linux-x64.txt
+            dist/phantom-aarch64-apple-darwin
+            dist/phantom-x86_64-apple-darwin
+            dist/phantom-x86_64-unknown-linux-gnu
+            dist/vault-mcp-aarch64-apple-darwin
+            dist/vault-mcp-x86_64-apple-darwin
+            dist/vault-mcp-x86_64-unknown-linux-gnu
