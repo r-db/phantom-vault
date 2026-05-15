@@ -546,12 +546,25 @@ async fn handle_biometric_disable(vault_dir: &PathBuf) -> Result<(), Box<dyn std
 }
 
 // Biometric functions (platform-specific implementations in vault-native)
+// FIX (2026-05-15, M4 biometric bug): `bioutil --availability` is not a real flag.
+// The macOS bioutil(8) tool has no `--availability` option — running it always
+// exits non-zero, so this function unconditionally returned false on every Mac,
+// preventing all biometric-based unlock flows from working (including agent
+// usage of `phantom run -s` since the TTY fallback was the only remaining path).
+//
+// Correct command is `bioutil -r` which reads biometric settings. It exits 0
+// when biometric hardware is present and outputs configuration including
+// "Effective biometrics for unlock: 1" when TouchID is actually usable.
 #[cfg(target_os = "macos")]
 pub(crate) fn is_biometric_available() -> bool {
     std::process::Command::new("bioutil")
-        .args(["--availability"])
+        .args(["-r"])
         .output()
-        .map(|o| o.status.success())
+        .map(|o| {
+            o.status.success()
+                && String::from_utf8_lossy(&o.stdout)
+                    .contains("Effective biometrics for unlock: 1")
+        })
         .unwrap_or(false)
 }
 
