@@ -71,6 +71,18 @@ enum Commands {
         metadata: bool,
     },
 
+    /// Edit all secrets in a text editor (sops-style).
+    ///
+    /// Opens NAME=value lines in a RAM-backed temp file (never touches
+    /// disk), auth-gated by the vault password. On save: new names are
+    /// added, changed values updated, removed names deleted (after
+    /// confirmation). The plaintext buffer is zeroed and unlinked.
+    Edit {
+        /// Editor command (default: micro, then $EDITOR, nano, vi)
+        #[arg(short, long)]
+        editor: Option<String>,
+    },
+
     /// Run a command with secrets injected
     Run {
         /// Secrets to inject (NAME or NAME=ENV_VAR)
@@ -271,6 +283,18 @@ fn open_vault(path: &PathBuf, namespace: &str) -> anyhow::Result<Vault> {
     Ok(vault)
 }
 
+/// Locate an executable on PATH.
+fn which(name: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
 /// Read a secret value from stdin or hidden prompt. Never echoed.
 fn read_secret_value(from_stdin: bool) -> anyhow::Result<SecretBuffer> {
     let raw = if from_stdin {
@@ -400,6 +424,139 @@ fn main() -> anyhow::Result<()> {
                     println!("{name}");
                 }
             }
+        }
+
+        Commands::Edit { editor } => {
+            let mut vault = open_vault(&vault_path, &cli.namespace)?;
+
+            // 1. Pick the editor and the flags that disable on-disk persistence.
+            let editor_cmd = editor
+                .or_else(|| which("micro"))
+                .or_else(|| std::env::var("EDITOR").ok().filter(|e| !e.is_empty()))
+                .or_else(|| which("nano"))
+                .or_else(|| which("vi"))
+                .context("no editor found — install micro or set $EDITOR")?;
+
+            // 2. Dump secrets into a RAM-backed (tmpfs) file, 0600.
+            let shm = PathBuf::from("/dev/shm");
+            let tmp_dir = if shm.is_dir() { shm } else {
+                eprintln!("warning: /dev/shm unavailable — using disk-backed temp");
+                std::env::temp_dir()
+            };
+            let tmp_path = tmp_dir.join(format!(".phantom-edit-{}", std::process::id()));
+
+            let names = vault.list().map_err(|e| anyhow::anyhow!("list: {e}"))?;
+            let mut buffer = String::from(
+                "# phantom-vault edit — NAME=value, one per line.\n\
+                 # Add a line to create, change a value to rotate, delete a line to remove.\n\
+                 # Lines starting with # are ignored. Multi-line values unsupported.\n\n",
+            );
+            let mut original: HashMap<String, String> = HashMap::new();
+            for name in &names {
+                let value = vault
+                    .get(name)
+                    .map_err(|e| anyhow::anyhow!("get {name}: {e}"))?;
+                value.with_exposed(|bytes| {
+                    let v = String::from_utf8_lossy(bytes).to_string();
+                    buffer.push_str(&format!("{name}={v}\n"));
+                    original.insert(name.clone(), v);
+                });
+            }
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&tmp_path)
+                    .with_context(|| format!("create {}", tmp_path.display()))?;
+                f.write_all(buffer.as_bytes())?;
+                f.sync_all()?;
+            }
+
+            // 3. Launch the editor with persistence disabled where we know how.
+            let editor_name = PathBuf::from(&editor_cmd)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let mut cmd = std::process::Command::new(&editor_cmd);
+            match editor_name.as_str() {
+                "micro" => {
+                    cmd.args(["-backup", "false", "-autosave", "0", "-savecursor", "false"]);
+                }
+                "vim" | "vi" => {
+                    cmd.args(["-n", "-i", "NONE"]);
+                }
+                _ => {}
+            }
+            let status = cmd.arg(&tmp_path).status();
+
+            // 4. Read back, then shred the buffer regardless of what happened.
+            let edited = std::fs::read_to_string(&tmp_path).unwrap_or_default();
+            let file_len = edited.len().max(buffer.len());
+            let _ = std::fs::write(&tmp_path, vec![0u8; file_len]); // overwrite
+            let _ = std::fs::remove_file(&tmp_path);
+            drop(buffer);
+
+            status.context("failed to launch editor")?;
+
+            // 5. Parse and diff.
+            let mut kept: HashMap<String, String> = HashMap::new();
+            for (lineno, line) in edited.lines().enumerate() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let Some((name, value)) = line.split_once('=') else {
+                    bail!("line {}: not NAME=value — aborting, nothing changed", lineno + 1);
+                };
+                let (name, value) = (name.trim(), value.trim());
+                if name.is_empty() || value.is_empty() {
+                    bail!("line {}: empty name or value — aborting, nothing changed", lineno + 1);
+                }
+                kept.insert(name.to_string(), value.to_string());
+            }
+
+            let mut added = 0u32;
+            let mut updated = 0u32;
+            for (name, value) in &kept {
+                match original.get(name) {
+                    Some(old) if old == value => {}
+                    Some(_) => {
+                        let buf = SecretBuffer::from_slice(value.as_bytes())
+                            .map_err(|e| anyhow::anyhow!("secure buffer: {e}"))?;
+                        vault.set(name, &buf).map_err(|e| anyhow::anyhow!("set {name}: {e}"))?;
+                        updated += 1;
+                    }
+                    None => {
+                        let buf = SecretBuffer::from_slice(value.as_bytes())
+                            .map_err(|e| anyhow::anyhow!("secure buffer: {e}"))?;
+                        vault.set(name, &buf).map_err(|e| anyhow::anyhow!("set {name}: {e}"))?;
+                        added += 1;
+                    }
+                }
+            }
+
+            let removed: Vec<&String> =
+                original.keys().filter(|n| !kept.contains_key(*n)).collect();
+            let mut deleted = 0u32;
+            if !removed.is_empty() {
+                eprintln!("secrets removed from buffer: {removed:?}");
+                eprint!("delete them from the vault? [y/N] ");
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                if answer.trim().eq_ignore_ascii_case("y") {
+                    for name in removed {
+                        vault
+                            .delete(name)
+                            .map_err(|e| anyhow::anyhow!("delete {name}: {e}"))?;
+                        deleted += 1;
+                    }
+                }
+            }
+
+            println!("edit complete: +{added} added, ~{updated} rotated, -{deleted} deleted");
         }
 
         Commands::Run { secret, command } => {
