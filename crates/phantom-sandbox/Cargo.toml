@@ -1,0 +1,29 @@
+[package]
+name = "phantom-sandbox"
+description = "Process sandboxing and network filtering for secure command execution"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+phantom-core = { workspace = true }
+phantom-sanitizer = { workspace = true }
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+# Process management
+nix = { version = "0.28", features = ["process", "signal"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS-specific dependencies would go here
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux-specific dependencies would go here
+seccompiler = "0.4"
+caps = "0.5"
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "phantom-hardware"
+description = "Hardware security module abstraction for Secure Enclave, TPM, and FIDO2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+phantom-core = { workspace = true }
+thiserror.workspace = true
+tracing.workspace = true
+argon2.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Security framework for Secure Enclave access
+security-framework = "2.9"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# TPM2 library
+# tss-esapi = "7.4"
+
+[dev-dependencies]
+tempfile.workspace = true

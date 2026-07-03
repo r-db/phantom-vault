@@ -1,0 +1,36 @@
+[package]
+name = "phantom-mcp"
+description = "MCP server for Claude Code and other AI assistant integration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+phantom-core = { workspace = true }
+phantom-sanitizer = { workspace = true }
+phantom-analyzer = { workspace = true }
+phantom-sandbox = { workspace = true }
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["full", "sync", "time", "io-util", "io-std"] }
+serde.workspace = true
+serde_json.workspace = true
+
+# UUID for lineage tracking
+uuid = { version = "1.7", features = ["v4"] }
+
+# TOML config parsing
+toml = "0.8"
+
+# Chrono for timestamps
+chrono = { version = "0.4", features = ["serde"] }
+
+# Parking lot for efficient locks
+parking_lot = "0.12"
+
+# Directories for config paths
+dirs = "5.0"
+
+[dev-dependencies]
+tempfile.workspace = true

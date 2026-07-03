@@ -1,0 +1,30 @@
+[package]
+name = "phantom-sanitizer"
+description = "Output sanitization engine for detecting and redacting leaked secrets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+phantom-core = { workspace = true }
+thiserror.workspace = true
+tracing.workspace = true
+rand.workspace = true
+
+# Pattern matching
+aho-corasick = "1.1"
+
+# Encoding libraries for variant detection
+base64 = "0.22"
+percent-encoding = "2.3"
+hex = "0.4"
+htmlescape = "0.3"
+
+[dev-dependencies]
+tempfile.workspace = true
+criterion = "0.5"
+
+[[bench]]
+name = "sanitizer_bench"
+harness = false
