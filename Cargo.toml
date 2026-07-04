@@ -16,7 +16,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
-repository = "https://github.com/phantom-vault/phantom-vault"
+repository = "https://github.com/r-db/phantom-vault"
 authors = ["Phantom Vault Contributors"]
 
 [workspace.dependencies]
