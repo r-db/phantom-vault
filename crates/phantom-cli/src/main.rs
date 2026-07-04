@@ -230,22 +230,33 @@ fn dirs_home() -> Option<PathBuf> {
 /// 2. PHANTOM_VAULT_PASSWORD — env var (discouraged; visible in /proc)
 /// 3. interactive hidden prompt (rpassword)
 fn read_password(confirm: bool) -> anyhow::Result<SecretBuffer> {
-    if let Ok(file) = std::env::var("PHANTOM_VAULT_PASSWORD_FILE") {
-        let mut buf = String::new();
-        std::fs::File::open(&file)
-            .with_context(|| format!("cannot open password file {file}"))?
-            .read_to_string(&mut buf)?;
-        let trimmed = buf.trim_end_matches(['\n', '\r']);
-        if trimmed.is_empty() {
-            bail!("password file {file} is empty");
-        }
-        return Ok(SecretBuffer::from_slice(trimmed.as_bytes())
-            .map_err(|e| anyhow::anyhow!("secure buffer: {e}"))?);
-    }
-    if let Ok(pw) = std::env::var("PHANTOM_VAULT_PASSWORD") {
-        if !pw.is_empty() {
-            return Ok(SecretBuffer::from_slice(pw.as_bytes())
+    use std::io::IsTerminal;
+    // SECURITY: a human at an interactive terminal is ALWAYS prompted for the
+    // master password — the file/env password sources are ignored when stdin
+    // is a TTY. Those non-interactive sources exist ONLY for headless callers
+    // (the MCP server, agent scripts) whose stdin is a pipe, never a terminal.
+    // Without this, `phantom edit` would unlock the whole vault with zero
+    // authentication just because PHANTOM_VAULT_PASSWORD_FILE happened to be
+    // exported in the shell — which is exactly the hole this closes.
+    let non_interactive = !std::io::stdin().is_terminal();
+    if non_interactive {
+        if let Ok(file) = std::env::var("PHANTOM_VAULT_PASSWORD_FILE") {
+            let mut buf = String::new();
+            std::fs::File::open(&file)
+                .with_context(|| format!("cannot open password file {file}"))?
+                .read_to_string(&mut buf)?;
+            let trimmed = buf.trim_end_matches(['\n', '\r']);
+            if trimmed.is_empty() {
+                bail!("password file {file} is empty");
+            }
+            return Ok(SecretBuffer::from_slice(trimmed.as_bytes())
                 .map_err(|e| anyhow::anyhow!("secure buffer: {e}"))?);
+        }
+        if let Ok(pw) = std::env::var("PHANTOM_VAULT_PASSWORD") {
+            if !pw.is_empty() {
+                return Ok(SecretBuffer::from_slice(pw.as_bytes())
+                    .map_err(|e| anyhow::anyhow!("secure buffer: {e}"))?);
+            }
         }
     }
     let pw = rpassword::prompt_password("Vault password: ")?;
