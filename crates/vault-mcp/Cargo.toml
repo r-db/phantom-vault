@@ -2,36 +2,23 @@
 name = "vault-mcp"
 version = "1.8.0"
 edition = "2021"
-description = "MCP server for secure credential injection"
+description = "MCP server binary that launches the safe phantom-vault scheme (analyzer -> egress-jailed sandbox -> sanitizer)"
 authors = ["Vault Secrets Team"]
 license = "MIT"
 
+[[bin]]
+name = "vault-mcp"
+path = "src/main.rs"
+
 [dependencies]
-# Workspace dependencies
-vault-core = { path = "../vault-core" }
+# Secure core (ported from the fork) — the vault + the safe MCP tool scheme.
+phantom-core = { workspace = true }
+phantom-mcp = { workspace = true }
+
 tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-uuid = { workspace = true }
-chrono = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
 
-# MCP SDK
-rmcp = { workspace = true }
-
-# Async runtime utilities
-futures = "0.3"
-
-# For reading password from terminal
+# Hidden password prompt for interactive (non-MCP) invocations.
 rpassword = "7.3"
-
-# For secure temporary file creation
-tempfile = "3.10"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-# Keychain access for biometric auto-unlock on macOS
-security-framework = "2.11"
-
-[dev-dependencies]

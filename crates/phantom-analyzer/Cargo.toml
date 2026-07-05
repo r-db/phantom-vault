@@ -1,0 +1,30 @@
+[package]
+name = "phantom-analyzer"
+description = "Command pre-analysis engine for oracle attack prevention"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Shell parsing
+shell-words = "1.1"
+
+# Pattern matching
+regex = "1.10"
+lazy_static = "1.4"
+
+# Policy
+serde_yaml = "0.9"
+
+# HMAC for policy signing
+ring = "0.17"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,43 +1,44 @@
-//! Vault MCP Server - Entry Point
+//! Vault MCP Server — Entry Point (safe scheme).
 //!
-//! Secure credential management server for Claude Code integration
+//! Launches the `phantom-mcp` server backed by the `phantom-core` vault. Only
+//! the leak-resistant tools are exposed; every `vault_run` command flows through
+//! the analyzer, an egress-jailed sandbox, and the output sanitizer. There is no
+//! credential-injection / arbitrary-HTTP tool anymore.
 
+use std::io::Read;
 use std::path::PathBuf;
-use tracing::{error, info, warn};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-use vault_core::storage::default_vault_dir;
-use vault_mcp::{create_shared_state, run_server};
+use phantom_core::memory::SecretBuffer;
+use phantom_core::Vault;
+use tracing::{error, info};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Handle command-line arguments
+/// Handle `--version` / `--help` and return `true` if we should exit early.
 fn handle_args() -> bool {
     let args: Vec<String> = std::env::args().collect();
-
     for arg in &args[1..] {
         match arg.as_str() {
             "--version" | "-V" => {
-                println!("phantom-vault {}", VERSION);
+                println!("vault-mcp {VERSION}");
                 return true;
             }
             "--help" | "-h" => {
-                println!("Phantom Vault - MCP Server");
+                println!("Phantom Vault — MCP Server (safe scheme)");
                 println!("The API key vault where secrets are used but never seen.");
                 println!();
                 println!("USAGE:");
-                println!("    phantom [OPTIONS]");
+                println!("    vault-mcp");
                 println!();
-                println!("OPTIONS:");
-                println!("    -h, --help       Print help information");
-                println!("    -V, --version    Print version information");
+                println!("This binary is launched as an MCP server by Claude Code and speaks");
+                println!("JSON-RPC on stdio. It exposes only leak-resistant tools:");
+                println!("    vault_list, vault_exists, vault_masked, vault_run, vault_health, vault_rotate");
                 println!();
                 println!("ENVIRONMENT:");
-                println!("    VAULT_DIR        Override default vault directory");
-                println!("    VAULT_PASSWORD   Auto-unlock vault (development only)");
-                println!();
-                println!("This binary is meant to be run as an MCP server by Claude Code.");
-                println!("For interactive usage, see: phantom --help");
+                println!("    PHANTOM_VAULT_DIR            Vault directory (default: ~/.phantom-vault)");
+                println!("    PHANTOM_VAULT_PASSWORD_FILE  Path to a 0600 file holding the master password");
+                println!("    PHANTOM_VAULT_PASSWORD       Master password (discouraged; visible in /proc)");
                 return true;
             }
             _ => {}
@@ -46,12 +47,9 @@ fn handle_args() -> bool {
     false
 }
 
-/// Initialize logging
 fn init_logging() {
-    // Log to stderr (stdout is used for MCP protocol)
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-
+    // Log to stderr — stdout is the MCP JSON-RPC channel.
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::registry()
         .with(
             fmt::layer()
@@ -63,93 +61,87 @@ fn init_logging() {
         .init();
 }
 
+/// Default vault location: `~/.phantom-vault` (override with `PHANTOM_VAULT_DIR`).
+fn vault_dir() -> anyhow::Result<PathBuf> {
+    if let Ok(dir) = std::env::var("PHANTOM_VAULT_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("could not determine home directory (set PHANTOM_VAULT_DIR)"))?;
+    Ok(home.join(".phantom-vault"))
+}
+
+/// Read the master password for headless (MCP) operation.
+///
+/// The MCP server's stdin is the JSON-RPC pipe, so it is never a TTY — the only
+/// supported sources are a 0600 file or an env var. We deliberately do NOT
+/// silently unlock from the OS keychain here (that silent-auto-unlock path was a
+/// confused-deputy hazard); enrollment/biometric remains a CLI concern.
+fn read_master_password() -> anyhow::Result<SecretBuffer> {
+    if let Ok(file) = std::env::var("PHANTOM_VAULT_PASSWORD_FILE") {
+        let mut buf = String::new();
+        std::fs::File::open(&file)
+            .map_err(|e| anyhow::anyhow!("cannot open PHANTOM_VAULT_PASSWORD_FILE {file}: {e}"))?
+            .read_to_string(&mut buf)?;
+        let trimmed = buf.trim_end_matches(['\n', '\r']);
+        if trimmed.is_empty() {
+            anyhow::bail!("password file {file} is empty");
+        }
+        return SecretBuffer::from_slice(trimmed.as_bytes())
+            .map_err(|e| anyhow::anyhow!("secure buffer: {e}"));
+    }
+    if let Ok(pw) = std::env::var("PHANTOM_VAULT_PASSWORD") {
+        if !pw.is_empty() {
+            return SecretBuffer::from_slice(pw.as_bytes())
+                .map_err(|e| anyhow::anyhow!("secure buffer: {e}"));
+        }
+    }
+    anyhow::bail!(
+        "no master password available — set PHANTOM_VAULT_PASSWORD_FILE (a 0600 file) or \
+         PHANTOM_VAULT_PASSWORD; the MCP server has no TTY to prompt on"
+    )
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Handle --version and --help before anything else
+async fn main() -> anyhow::Result<()> {
     if handle_args() {
         return Ok(());
     }
 
     init_logging();
+    info!("vault-mcp {VERSION} starting (safe scheme)...");
 
-    info!("Vault MCP Server starting...");
+    let dir = vault_dir()?;
+    info!("Using vault directory: {}", dir.display());
 
-    // Get vault directory from environment or use default
-    let vault_dir = std::env::var("VAULT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| default_vault_dir());
-
-    info!("Using vault directory: {}", vault_dir.display());
-
-    // Create shared state
-    let state = match create_shared_state(vault_dir.clone()).await {
-        Ok(s) => s,
-        Err(e) => {
-            error!("Failed to initialize vault state: {}", e);
-            return Err(e.into());
-        }
-    };
-
-    // Check if vault exists
-    let vault_exists = {
-        let state_read = state.read().await;
-        let exists = state_read.vault_exists().await;
-        if !exists {
-            info!("No vault found at {}. Create one using the UI or CLI first.", vault_dir.display());
-        }
-        exists
-    };
-
-    // Auto-unlock from OS Keychain (biometric enrollment).
-    // This is the production path: user runs `phantom biometric enable` once on their
-    // machine, master password lands in Keychain, MCP server auto-unlocks at boot.
-    // No prompt — there's no TTY when launched by Claude Code's MCP client.
-    if vault_exists && std::env::var("PHANTOM_NO_BIOMETRIC").map(|v| v == "1").unwrap_or(false) == false {
-        if let Some(password) = get_master_from_keychain(&vault_dir.to_string_lossy()) {
-            let mut state_write = state.write().await;
-            match state_write.unlock(&password).await {
-                Ok(_) => info!("Vault auto-unlocked from Keychain (biometric enrollment)"),
-                Err(e) => warn!("Keychain entry present but unlock failed: {}. Vault remains locked.", e),
-            }
-            // Drop password explicitly to encourage zeroization
-            drop(password);
-        } else {
-            info!("No Keychain entry for this vault. Vault starts locked. Enable biometric via: phantom biometric enable");
-        }
+    let mut vault = Vault::new(&dir).map_err(|e| anyhow::anyhow!("vault: {e}"))?;
+    if !vault.is_initialized() {
+        error!(
+            "vault at {} is not initialized — create one with the CLI first",
+            dir.display()
+        );
+        anyhow::bail!("vault not initialized at {}", dir.display());
     }
 
-    // Auto-unlock via environment (DEVELOPMENT ONLY - do not use in production!)
-    // This is insecure as the password is stored in plain text in the environment.
-    #[cfg(debug_assertions)]
-    if let Ok(password) = std::env::var("VAULT_PASSWORD") {
-        warn!("VAULT_PASSWORD env var is set - this is INSECURE and for development only!");
-        let mut state_write = state.write().await;
-        if let Err(_) = state_write.unlock(password.as_bytes()).await {
-            error!("Failed to auto-unlock vault");
-        } else {
-            info!("Vault auto-unlocked (development mode)");
-        }
-        // Clear the password from memory
-        drop(password);
-    }
+    let password = read_master_password()?;
+    vault
+        .open(&password)
+        .map_err(|e| anyhow::anyhow!("failed to open vault: {e}"))?;
+    drop(password);
+    info!("Vault unlocked.");
 
-    // Run the MCP server
+    let mcp_config =
+        phantom_mcp::McpConfig::load().map_err(|e| anyhow::anyhow!("mcp config: {e}"))?;
+    let registry = phantom_mcp::ToolRegistry::with_vault(mcp_config.clone(), vault);
+    let server = phantom_mcp::McpServer::with_registry(mcp_config, registry);
+
     info!("Starting MCP server on stdio...");
-    run_server(state).await?;
+    server
+        .run_stdio()
+        .await
+        .map_err(|e| anyhow::anyhow!("mcp server: {e}"))?;
 
-    info!("Vault MCP Server shutting down");
+    info!("vault-mcp shutting down");
     Ok(())
-}
-
-/// Retrieve the master password from the macOS Keychain (set there by `phantom biometric enable`).
-/// Returns None on non-macOS platforms or if the keychain entry is missing.
-#[cfg(target_os = "macos")]
-fn get_master_from_keychain(vault_id: &str) -> Option<Vec<u8>> {
-    use security_framework::passwords::get_generic_password;
-    get_generic_password("com.phantomvault.master-key", vault_id).ok()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn get_master_from_keychain(_vault_id: &str) -> Option<Vec<u8>> {
-    None
 }

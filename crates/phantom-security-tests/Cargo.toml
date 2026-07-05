@@ -1,0 +1,24 @@
+[package]
+name = "phantom-security-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Security test suite for Phantom Vault"
+publish = false
+
+[dependencies]
+phantom-core = { workspace = true }
+phantom-sanitizer = { workspace = true }
+phantom-analyzer = { workspace = true }
+phantom-sandbox = { workspace = true }
+phantom-mcp = { workspace = true }
+base64 = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

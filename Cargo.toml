@@ -5,6 +5,13 @@ members = [
     "crates/vault-core",
     "crates/vault-mcp",
     "crates/vault-tauri",
+    # Secure core, ported from the phantom-vault fork (Option A merge).
+    "crates/phantom-core",
+    "crates/phantom-sanitizer",
+    "crates/phantom-analyzer",
+    "crates/phantom-sandbox",
+    "crates/phantom-mcp",
+    "crates/phantom-security-tests",
     "native",
     "tauri-app",
 ]
@@ -16,6 +23,8 @@ rust-version = "1.75"
 license = "MIT"
 authors = ["Vault Secrets Team"]
 description = "Secure credential management for LLM tools"
+# Ported secure crates inherit this via `repository.workspace = true`.
+repository = "https://github.com/r-db/phantom-vault"
 
 [workspace.dependencies]
 # Async runtime
@@ -28,6 +37,7 @@ toml = "0.8"
 
 # Cryptography
 aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
 argon2 = "0.5"
 rand = "0.8"
 sha2 = "0.10"
@@ -35,6 +45,13 @@ sha2 = "0.10"
 # Secure memory
 zeroize = { version = "1.7", features = ["derive"] }
 secrecy = "0.8"
+
+# Storage (phantom-core encrypted SQLite backend)
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Memory protection (phantom-core SecretBuffer)
+memsec = "0.7"
+region = "3.0"
 
 # MCP Protocol
 rmcp = { version = "0.1", features = ["server", "transport-io"] }
@@ -48,6 +65,7 @@ regex = "1.10"
 lazy_static = "1.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22"
 
 # Tauri
 tauri = { version = "2.0", features = [] }
@@ -56,3 +74,13 @@ tauri-build = "2.0"
 
 # System
 dirs = "5.0"
+
+# Testing
+tempfile = "3.10"
+
+# Internal secure crates (ported from the fork)
+phantom-core = { path = "crates/phantom-core" }
+phantom-sanitizer = { path = "crates/phantom-sanitizer" }
+phantom-analyzer = { path = "crates/phantom-analyzer" }
+phantom-sandbox = { path = "crates/phantom-sandbox" }
+phantom-mcp = { path = "crates/phantom-mcp" }
