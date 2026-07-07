@@ -14,8 +14,9 @@ path = "src/main.rs"
 # CLI framework
 clap = { version = "4.5", features = ["derive"] }
 
-# Vault core functionality
-vault-core = { path = "../vault-core" }
+# Secure vault backend (SAME as the MCP server — one source of truth):
+# mlock memory, AES-GCM + Argon2, encrypted SQLite at ~/.phantom-vault.
+phantom-core = { path = "../phantom-core" }
 
 # Async runtime
 tokio = { workspace = true }

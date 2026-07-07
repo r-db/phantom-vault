@@ -2,18 +2,13 @@
 resolver = "2"
 members = [
     "crates/phantom-cli",
-    "crates/vault-core",
     "crates/vault-mcp",
-    "crates/vault-tauri",
-    # Secure core, ported from the phantom-vault fork (Option A merge).
     "crates/phantom-core",
     "crates/phantom-sanitizer",
     "crates/phantom-analyzer",
     "crates/phantom-sandbox",
     "crates/phantom-mcp",
     "crates/phantom-security-tests",
-    "native",
-    "tauri-app",
 ]
 
 [workspace.package]

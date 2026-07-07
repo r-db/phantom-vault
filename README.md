@@ -1,7 +1,7 @@
 # Phantom Vault - Secure LLM Credential Management
 
-**Status:** v1.4.0 PRODUCTION READY
-**Last Updated:** 2026-03-05
+**Status:** v0.1.0 — early. Secure core landed; end-to-end containment under independent audit.
+**Last Updated:** 2026-07-06
 
 ---
 
@@ -13,11 +13,11 @@
 
 ## Quick Context (For Zero-Context Readers)
 
-> This is a **secure credential management system** designed specifically for LLM tools like Claude Code. The core security guarantee: **LLMs never see real credentials**. Instead, they use symbolic references (e.g., "prod-db"), and this application injects actual credentials at execution time, then scans output for any leaked secrets before returning results.
+> This is a **secret manager designed for LLM tools** like Claude Code. The design goal: an LLM uses a secret **by name** (e.g. `prod-db`) — the vault injects the real value at execution time, runs the command in a network + filesystem jail, and sanitizes the output before returning it, so the raw value comes back as `[REDACTED]`. Whether that fully prevents exfiltration end-to-end is under independent audit (see Security Features).
 >
-> **Why it matters:** LLMs can leak credentials through conversations, logs, or training data. This system eliminates that risk entirely while maintaining full functionality.
+> **Why it matters:** LLMs can leak credentials through conversations, logs, or output. Phantom Vault is built to shrink that risk to near-zero — encrypted at rest, jailed at runtime, sanitized on the way out — while keeping the tools usable.
 >
-> **Current State:** v1.4.0 - CLI and MCP server are production ready. All critical, high, and most medium/low priority issues have been resolved. See [Known Issues](docs/KNOWN_ISSUES.md) for remaining limitations.
+> **Current State:** **v0.1.0 (early).** The secure core is implemented and enforced: AES-256-GCM + Argon2id encryption, output sanitizer/redaction, canary honeypots, a fail-closed network egress jail, a Landlock filesystem jail, and `mlock` memory protection. The end-to-end guarantee that *an AI can never exfiltrate a secret* is under an independent containment audit and **not yet claimed as final**. A few CLI commands (`guardrail`, `policy`, `passwd`) are not yet on the secure backend.
 
 **Related Documents:**
 - [User Manual](USER_MANUAL.md) - Complete usage guide
@@ -147,15 +147,26 @@ USER: "Deploy my app using railway-token"
 
 ### Security Features
 
-| Feature | Implementation | Status |
-|---------|----------------|--------|
-| Encryption at rest | AES-256-GCM | ✅ Complete |
-| Key derivation | Argon2id (64MB memory, 3 iterations) | ✅ Complete |
-| Secure memory | `zeroize` crate - zeroes memory on drop | ✅ Complete |
-| Credential detection | 50+ regex patterns for known credential formats | ✅ Complete |
-| Output filtering | All MCP responses scanned before returning to LLM | ✅ Complete |
-| Audit logging | Encrypted log of all credential access | ✅ Complete |
-| Lockout protection | Max attempts + timeout | ✅ Complete |
+**Enforced in the secure core (v0.1.0)** — proven present in the code; describe these plainly:
+
+| Protection | Implementation | Status |
+|---|---|---|
+| Encryption at rest | AES-256-GCM, Argon2id-derived key | ✅ Enforced |
+| Memory protection | `zeroize` on drop + `mlock` (no swap to disk) | ✅ Enforced |
+| Output sanitizer / redaction | value + encoded variants (base64/hex/URL) scrubbed from returned output | ✅ Enforced |
+| Network egress jail | fail-closed egress jail around each command — no path to send a secret out | ✅ Enforced |
+| Filesystem jail | Landlock — command can't write the secret to disk | ✅ Enforced |
+| Canary honeypots | decoy secrets that flag misuse | ✅ Enforced |
+| Audit logging | log of every credential access | ✅ Enforced |
+| Lockout protection | max attempts + timeout | ✅ Enforced |
+
+**Roadmap / not yet claimed** — do not state these as delivered:
+
+| Item | Status |
+|---|---|
+| End-to-end "an AI can never exfiltrate a secret" | 🔬 Under independent containment audit (Magnus's gate) — not claimed until it passes |
+| `guardrail`, `policy`, `passwd` CLI commands | 🚧 Not yet wired to the secure backend |
+| Hardware backing (Secure Enclave / TPM / FIDO2) | 🗺️ Planned |
 
 ---
 

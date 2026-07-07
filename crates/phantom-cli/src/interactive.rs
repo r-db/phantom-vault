@@ -7,11 +7,12 @@
 use std::path::PathBuf;
 
 use inquire::{Confirm, Password, PasswordDisplayMode, Select, Text};
-use vault_core::{load_config, load_vault, save_vault, vault_exists, EncryptedValue, SecretEntry, SecretType};
+use phantom_core::memory::SecretBuffer;
+use phantom_core::Vault;
 
 use crate::{
-    create_vault_with_password, get_master_from_keychain, handle_edit, handle_guardrail_set,
-    handle_list, handle_mcp_install, handle_passwd,
+    create_vault_with_password, get_master_from_keychain, handle_edit, handle_list,
+    handle_mcp_install, handle_passwd, vault_initialized,
 };
 
 /// Entry point for bare `phantom` — first-run wizard or returning-user menu.
@@ -29,7 +30,7 @@ pub(crate) async fn run_default(vault_dir: &PathBuf) -> Result<(), Box<dyn std::
         return Ok(());
     }
 
-    if vault_exists(vault_dir).await {
+    if vault_initialized(vault_dir) {
         returning_user_menu(vault_dir).await
     } else {
         first_run_wizard(vault_dir).await
@@ -100,7 +101,6 @@ async fn first_run_wizard(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error:
     println!("  phantom              Open this menu anytime");
     println!("  phantom edit         Bulk-edit all secrets in your editor");
     println!("  phantom passwd       Change your master password");
-    println!("  phantom guardrail    Set spending caps on a credential");
     Ok(())
 }
 
@@ -110,17 +110,18 @@ async fn returning_user_menu(vault_dir: &PathBuf) -> Result<(), Box<dyn std::err
     // Unlock: Keychain auto-unlock first, fall back to interactive password prompt.
     let password = unlock_or_prompt(vault_dir).await?;
 
-    // Quick stats line
-    let config = load_config(vault_dir).await?;
-    let (vault_data, _keys, _salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
-    let n = vault_data.entries.len();
-    let g = vault_data.guardrails.len();
+    // Quick stats line (open the phantom-core vault to count secrets).
+    let n = {
+        let mut vault = Vault::new(vault_dir).map_err(|e| format!("vault: {}", e))?;
+        let pw = SecretBuffer::from_slice(password.as_bytes())
+            .map_err(|e| format!("secure buffer: {}", e))?;
+        vault.open(&pw).map_err(|_| "Invalid password")?;
+        vault.total_count().unwrap_or(0)
+    };
     println!(
-        "{} secret{} stored, {} guardrail{} set.",
+        "{} secret{} stored.",
         n,
         if n == 1 { "" } else { "s" },
-        g,
-        if g == 1 { "" } else { "s" }
     );
     println!();
 
@@ -133,7 +134,6 @@ async fn returning_user_menu(vault_dir: &PathBuf) -> Result<(), Box<dyn std::err
                 "Bulk-edit all secrets in $EDITOR",
                 "List secret names",
                 "Set up Claude Code integration",
-                "Set or update a spending guardrail",
                 "Change master password",
                 "Quit",
             ],
@@ -152,9 +152,6 @@ async fn returning_user_menu(vault_dir: &PathBuf) -> Result<(), Box<dyn std::err
             }
             "Set up Claude Code integration" => {
                 handle_mcp_install().await?;
-            }
-            "Set or update a spending guardrail" => {
-                guardrail_wizard(vault_dir).await?;
             }
             "Change master password" => {
                 handle_passwd(vault_dir).await?;
@@ -191,8 +188,12 @@ async fn add_secrets_loop(
     vault_dir: &PathBuf,
     password: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let config = load_config(vault_dir).await?;
-    let (mut vault_data, keys, salt) = load_vault(vault_dir, password.as_bytes(), &config).await?;
+    // Open the phantom-core vault once, batch every set into it.
+    let mut vault = Vault::new(vault_dir).map_err(|e| format!("vault: {}", e))?;
+    let pw = SecretBuffer::from_slice(password.as_bytes())
+        .map_err(|e| format!("secure buffer: {}", e))?;
+    vault.open(&pw).map_err(|_| "Invalid password")?;
+    drop(pw);
 
     let mut added = 0usize;
     let mut updated = 0usize;
@@ -209,74 +210,30 @@ async fn add_secrets_loop(
             .without_confirmation()
             .prompt()?;
 
-        let existing_id = vault_data
-            .find_by_reference(&name)
-            .map(|e| e.id);
+        if value.is_empty() {
+            println!("(Skipped '{}': empty value.)", name);
+            continue;
+        }
 
-        let (ciphertext, nonce) = keys.encrypt(value.as_bytes())?;
-        let encrypted = EncryptedValue { nonce, ciphertext };
+        let existed = vault.exists(&name).unwrap_or(false);
+        let buf = SecretBuffer::from_slice(value.as_bytes())
+            .map_err(|e| format!("secure buffer: {}", e))?;
+        vault.set(&name, &buf)?;
 
-        match existing_id {
-            Some(id) => {
-                vault_data.encrypted_values.insert(id, encrypted);
-                updated += 1;
-                println!("✓ Updated '{}'.", name);
-            }
-            None => {
-                let entry = SecretEntry::new(name.clone(), SecretType::default());
-                let id = entry.id;
-                vault_data.entries.push(entry);
-                vault_data.encrypted_values.insert(id, encrypted);
-                added += 1;
-                println!("✓ Stored '{}'.", name);
-            }
+        if existed {
+            updated += 1;
+            println!("✓ Updated '{}'.", name);
+        } else {
+            added += 1;
+            println!("✓ Stored '{}'.", name);
         }
     }
 
     if added > 0 || updated > 0 {
-        save_vault(vault_dir, &vault_data, &keys, &salt).await?;
         println!();
-        println!(
-            "Saved: {} new, {} updated.",
-            added, updated
-        );
+        println!("Saved: {} new, {} updated.", added, updated);
     } else {
         println!("(No secrets added.)");
     }
-    Ok(())
-}
-
-async fn guardrail_wizard(vault_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let name = Text::new("Which secret should we cap spend on?")
-        .with_help_message("Must match a secret name in the vault. Run 'List secret names' first if unsure.")
-        .prompt()?;
-
-    let cap_str = Text::new("Monthly USD cap:")
-        .with_placeholder("50")
-        .prompt()?;
-    let cap: f64 = cap_str
-        .trim()
-        .parse()
-        .map_err(|_| "Cap must be a number (e.g. 50, 100.50)")?;
-
-    let provider = Select::new(
-        "Which provider issues this key?",
-        vec![
-            "openai",
-            "anthropic",
-            "gemini",
-            "stripe",
-            "twilio",
-            "elevenlabs",
-            "deepgram",
-            "cohere",
-            "mistral",
-            "openrouter",
-            "manual",
-        ],
-    )
-    .prompt()?;
-
-    handle_guardrail_set(vault_dir, name.trim(), cap, provider, 80).await?;
     Ok(())
 }
