@@ -1,6 +1,6 @@
 [package]
 name = "vault-mcp"
-version = "1.8.0"
+version = "0.1.0"
 edition = "2021"
 description = "MCP server binary that launches the safe phantom-vault scheme (analyzer -> egress-jailed sandbox -> sanitizer)"
 authors = ["Vault Secrets Team"]

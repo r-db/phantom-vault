@@ -15,6 +15,10 @@ use vault_core::{
 
 mod interactive;
 
+// Filesystem containment for `run` (Landlock; Linux only).
+#[cfg(target_os = "linux")]
+mod sandbox_fs;
+
 #[derive(Parser)]
 #[command(name = "phantom")]
 #[command(author = "Riscent")]
@@ -999,13 +1003,65 @@ async fn handle_run(
         env_vars.push((env_name, value));
     }
 
-    // Run command with injected environment
-    let mut child = std::process::Command::new(&command[0])
-        .args(&command[1..])
-        .envs(env_vars)
-        .spawn()?;
+    // Run command with injected environment, FILESYSTEM-CONTAINED (approach A):
+    // the subprocess may write ONLY beneath a per-run scratch dir (wiped after) + /dev/null,
+    // so an injected secret cannot be written to an agent-chosen file (EXFIL_FILE_SINK).
+    #[cfg(target_os = "linux")]
+    let status = {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::io::RawFd;
+        use std::os::unix::process::CommandExt;
 
-    let status = child.wait()?;
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let scratch =
+            std::env::temp_dir().join(format!("phantom-run-{}-{}", std::process::id(), uniq));
+        std::fs::create_dir_all(&scratch)?;
+
+        let open_pathfd = |p: &std::path::Path| -> std::io::Result<RawFd> {
+            let c = std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has NUL")
+            })?;
+            let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+            if fd < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(fd)
+            }
+        };
+        let scratch_fd = open_pathfd(&scratch)?;
+        let devnull_fd = open_pathfd(std::path::Path::new("/dev/null"))?;
+
+        let mut cmd = std::process::Command::new(&command[0]);
+        cmd.args(&command[1..]).envs(env_vars).current_dir(&scratch);
+        // SAFETY: restrict_writes_to is async-signal-safe (raw syscalls, no alloc).
+        unsafe {
+            cmd.pre_exec(move || {
+                sandbox_fs::restrict_writes_to(&[scratch_fd], &[devnull_fd])
+                    .map_err(std::io::Error::from_raw_os_error)
+            });
+        }
+        let spawn_res = cmd.spawn();
+        unsafe {
+            libc::close(scratch_fd);
+            libc::close(devnull_fd);
+        }
+        let mut child = spawn_res?;
+        let status = child.wait()?;
+        let _ = std::fs::remove_dir_all(&scratch);
+        status
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let status = {
+        let mut child = std::process::Command::new(&command[0])
+            .args(&command[1..])
+            .envs(env_vars)
+            .spawn()?;
+        child.wait()?
+    };
 
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
@@ -1938,6 +1994,26 @@ async fn handle_update() -> Result<(), Box<dyn std::error::Error>> {
 // === Helper Functions ===
 
 fn prompt_password(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::IsTerminal;
+    // Headless channel (automation / MCP / gating): when stdin is NOT an interactive
+    // terminal, read the master password from PHANTOM_VAULT_PASSWORD_FILE (preferred)
+    // or PHANTOM_VAULT_PASSWORD — never prompt. Gated behind !is_terminal so an
+    // interactive session always uses the hidden TTY prompt; env vars can't silently
+    // downgrade an interactive unlock. (v01 headless-password fix, applied 2026-07-06.)
+    if !io::stdin().is_terminal() {
+        if let Ok(f) = std::env::var("PHANTOM_VAULT_PASSWORD_FILE") {
+            let f = f.trim();
+            if !f.is_empty() {
+                let p = std::fs::read_to_string(f)?;
+                return Ok(p.trim_end_matches(['\n', '\r']).to_string());
+            }
+        }
+        if let Ok(p) = std::env::var("PHANTOM_VAULT_PASSWORD") {
+            if !p.is_empty() {
+                return Ok(p);
+            }
+        }
+    }
     print!("{}", prompt);
     io::stdout().flush()?;
     let password = rpassword::read_password()?;

@@ -2761,13 +2761,14 @@ dependencies = [
 
 [[package]]
 name = "phantom-cli"
-version = "1.8.2"
+version = "0.1.0"
 dependencies = [
  "atty",
  "chrono",
  "clap",
  "dirs 5.0.1",
  "inquire",
+ "libc",
  "rpassword",
  "security-framework",
  "serde_json",
@@ -5003,7 +5004,7 @@ dependencies = [
 
 [[package]]
 name = "vault-mcp"
-version = "1.8.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "phantom-core",
