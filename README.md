@@ -129,7 +129,7 @@ USER: "Deploy my app using railway-token"
          ▼
 ┌─────────────────┐
 │   Claude Code   │  Sees: "Deployment successful, URL: myapp.railway.app"
-└─────────────────┘  NEVER sees: "rwy_abc123secret..."
+└─────────────────┘  Gets back: "[REDACTED]" — not the real token
 ```
 
 ---
@@ -570,18 +570,19 @@ cargo tauri dev
 
 ---
 
-## Current Status (v1.4.0)
+## Current Status (v0.1.0)
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| vault-core (crypto) | ✅ Complete | AES-256-GCM + Argon2id |
-| vault-core (storage) | ✅ Complete | Encrypted file I/O, atomic writes, consistency check |
-| vault-core (filter) | ✅ Complete | 50+ credential patterns, accurate redaction counts |
-| vault-core (audit) | ✅ Complete | HMAC-chained audit logging with client ID |
-| vault-core (models) | ✅ Complete | All data structures, namespace-aware lookups, validation |
-| vault-mcp (server) | ✅ Complete | MCP JSON-RPC protocol |
-| vault-mcp (handlers) | ✅ Complete | SSH host key verification configurable |
-| phantom-cli | ✅ Complete | All CLI commands with input validation |
+| vault-core (crypto) | ✅ Enforced | AES-256-GCM + Argon2id |
+| vault-core (storage) | ✅ Enforced | Encrypted file I/O, atomic writes, consistency check |
+| vault-core (filter) | ✅ Enforced | Output sanitizer — credential patterns + encoded-variant scrub |
+| vault-core (audit) | ✅ Enforced | Audit logging with client ID (tamper-evident chaining under audit) |
+| vault-core (models) | ✅ Enforced | Data structures, namespace-aware lookups, validation |
+| runtime jails | ✅ Enforced | Fail-closed network egress jail + Landlock filesystem jail + `mlock` |
+| vault-mcp (server) | ✅ Enforced | MCP JSON-RPC protocol |
+| phantom-cli | ⚠️ Partial | Core commands on the secure backend; `guardrail` / `policy` / `passwd` not yet wired |
+| end-to-end containment | 🔬 Under audit | "AI can never exfiltrate" — pending Magnus's containment gate |
 | native (mobile FFI) | 🔲 Scaffold | API stubs only |
 
 ### Known Issues Summary
@@ -595,7 +596,7 @@ cargo tauri dev
 
 **See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) for full details.**
 
-### What Was Fixed in v1.4.0
+### Notable fixes (from the pre-secure-core prototype, carried forward)
 
 - TimeRestriction hour validation (0-23 range)
 - Environment variable name validation (POSIX standard)

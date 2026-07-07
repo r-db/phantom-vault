@@ -4,6 +4,30 @@ All notable changes to Phantom Vault. This file follows [Keep a Changelog](https
 
 ---
 
+## [0.1.0] — 2026-07-06
+
+First tagged release of the **secure core**. This is the version the code actually reports (`Cargo.toml` = `0.1.0`). The `1.7.x`–`1.8.x` numbers below came from a pre-secure-core prototype line and did **not** correspond to an audited, secure release.
+
+### Enforced (proven in the code)
+- **Encryption at rest** — AES-256-GCM with an Argon2id-derived key.
+- **Memory protection** — `zeroize` on drop + `mlock` (no swap to disk).
+- **Output sanitizer / redaction** — value and its encoded variants (base64/hex/URL) scrubbed from returned output.
+- **Network egress jail** — fail-closed egress jail around each command (no path to send a secret out).
+- **Filesystem jail (Landlock)** — commands cannot write a secret to disk.
+- **Canary honeypots** — decoy secrets that flag misuse.
+- **Audit logging** of every access; **MCP server + CLI** (`vault_run` returns `[REDACTED]`).
+
+### Not yet claimed (roadmap)
+- End-to-end **"an AI can never exfiltrate a secret"** — under independent containment audit (Magnus's gate); not asserted until it passes.
+- `guardrail`, `policy`, `passwd` CLI commands — not yet on the secure backend.
+- Hardware backing (Secure Enclave / TPM / FIDO2) — planned.
+
+---
+
+## Historical — pre-secure-core prototype
+
+> The `1.7.x`–`1.8.x` entries below belonged to an earlier, non-secure prototype line whose version numbers did not reflect a secure, audited release. They are kept for context and are superseded entirely by `0.1.0` above.
+
 ## [1.8.2] — 2026-05-15
 
 ### Fixed
