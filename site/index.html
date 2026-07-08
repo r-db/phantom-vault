@@ -295,7 +295,7 @@ body.flat .rv{opacity:1!important;transform:none!important;transition:none!impor
         <div class="lab">With Phantom Vault</div>
         <h3>The AI works through the vault</h3>
         <p>Secrets are injected into the subprocess, and the value comes back as <span class="mono">[REDACTED]</span> — the AI uses the secret without the raw string in its output.</p>
-        <ul><li>Run in a fail-closed network + filesystem jail</li><li>Output sanitized before it's returned</li><li>Encrypted at rest (AES-256-GCM + Argon2id)</li></ul>
+        <ul><li>Encrypted at rest, master-password locked</li><li>Called by name via <span class="mono">vault_run</span></li><li>Every use written to the audit log</li></ul>
       </div>
     </div>
   </div>
@@ -309,12 +309,12 @@ body.flat .rv{opacity:1!important;transform:none!important;transition:none!impor
       <h2>What happens when a secret is needed.</h2>
     </div>
     <div class="mech">
-      <div class="step rv"><span class="tag tag-ok">verified</span><div class="n">01 · inject</div><h3>Slip the key in</h3><p>The secret is placed into the subprocess environment for that one command — not printed, not echoed.</p></div>
-      <div class="step rv d1"><span class="tag tag-ok">verified</span><div class="n">02 · jail</div><h3>Wall it off</h3><p>The command runs in a fail-closed network egress jail and a Landlock filesystem jail — it can't phone the secret out or write it to disk.</p></div>
-      <div class="step rv d2"><span class="tag tag-ok">verified</span><div class="n">03 · sanitize</div><h3>Scrub the output</h3><p>The output sanitizer strips the value and its encoded variants (base64, hex, URL) before anything is returned.</p></div>
-      <div class="step rv"><span class="tag tag-ok">verified</span><div class="n">04 · audit</div><h3>Record the access</h3><p>Every access is written to the audit log, and canary honeypots flag misuse.</p></div>
+      <div class="step rv"><span class="tag tag-wip">under audit</span><div class="n">01 · analyze</div><h3>Pre-flight the command</h3><p>Command pre-analysis (in the codebase; being hardened) checks for oracle and side-channel tricks before anything runs.</p></div>
+      <div class="step rv d1"><span class="tag tag-ok">verified</span><div class="n">02 · inject</div><h3>Slip the key in</h3><p>The secret is placed into the subprocess environment for that one command — not printed, not echoed.</p></div>
+      <div class="step rv d2"><span class="tag tag-wip">under audit</span><div class="n">03 · sanitize</div><h3>Scrub the output</h3><p>Output is filtered for the value and its encoded variants (base64, hex, URL) before returning. Effectiveness is under active audit.</p></div>
+      <div class="step rv"><span class="tag tag-wip">under audit</span><div class="n">04 · audit</div><h3>Record the access</h3><p>Every access is written to the audit log. Tamper-evident chaining and canary detection are implemented and being verified.</p></div>
     </div>
-    <p class="honest">Each layer above is <b>proven in the code</b>. The end-to-end guarantee — that an AI can <i>never</i> exfiltrate a secret — is under independent audit (Magnus's containment gate) and not claimed as final until it passes.</p>
+    <p class="honest"><b>Verified</b> means proven in the code today. <i>Under audit</i> means it exists but an outside checker (not us) is still confirming it holds — until then we don't claim it as fact.</p>
   </div>
 </section>
 
@@ -324,15 +324,15 @@ body.flat .rv{opacity:1!important;transform:none!important;transition:none!impor
     <div class="section-head rv">
       <span class="eyebrow">What's proven, and what's not</span>
       <h2>The honest security status.</h2>
-      <p>It's open source under Apache 2.0 — read every line. The six layers below are <span class="mono" style="color:var(--safe)">verified</span> — enforced in the secure-core code today. What's still <span class="mono" style="color:var(--phantom)">pending</span>: the end-to-end guarantee that an AI can never exfiltrate a secret (under Magnus's containment audit), and a few CLI commands (guardrail, policy, passwd) not yet on the secure backend. We understate on purpose.</p>
+      <p>It's open source under Apache 2.0 — read every line. Each item below is labeled <span class="mono" style="color:var(--safe)">verified</span> (proven in the code) or <span class="mono" style="color:var(--phantom)">under audit / planned</span> (implemented but not yet independently confirmed). We understate on purpose.</p>
     </div>
     <div class="rec-grid">
-      <div class="rec rv"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div><span class="tag tag-ok">verified</span><h3>Encrypted at rest</h3><p>AES-256-GCM with an Argon2id-derived master key. Keys are zeroized in memory after use.</p></div>
-      <div class="rec rv d1"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9zM2 9h2M2 15h2M20 9h2M20 15h2M9 2v2M15 2v2M9 20v2M15 20v2"/></svg></div><span class="tag tag-ok">verified</span><h3>mlock memory protection</h3><p>Secret material is pinned with <code>mlock</code> so it can't be swapped to disk.</p></div>
-      <div class="rec rv d2"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10M8 3l-2 18M18 3l-2 18"/></svg></div><span class="tag tag-ok">verified</span><h3>Output sanitizer &amp; redaction</h3><p>Strips the secret and its encoded variants (base64, hex, URL) from returned output before the AI sees it.</p></div>
-      <div class="rec rv"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg></div><span class="tag tag-ok">verified</span><h3>Canary honeypots</h3><p>Decoy secrets planted in the store; touching one flags misuse.</p></div>
-      <div class="rec rv d1"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M5 5l14 14"/></svg></div><span class="tag tag-ok">verified</span><h3>Network egress jail</h3><p>Commands run in a <strong>fail-closed</strong> egress jail — no network path to send a secret out.</p></div>
-      <div class="rec rv d2"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l2-2h5l2 2h9v12H3z"/><rect x="10" y="12" width="4" height="4" rx="1"/><path d="M11 12v-1a1 1 0 0 1 2 0v1"/></svg></div><span class="tag tag-ok">verified</span><h3>Filesystem jail (Landlock)</h3><p>Landlock closes the disk path — the command can't write your secret to a file.</p></div>
+      <div class="rec rv"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div><span class="tag tag-ok">verified</span><h3>AES-256-GCM at rest</h3><p>Secrets encrypted at rest; master password derived with Argon2; keys zeroized in memory.</p></div>
+      <div class="rec rv d1"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg></div><span class="tag tag-ok">verified</span><h3>MCP server &amp; CLI</h3><p>A 14-command CLI and an MCP server. Claude Code calls <code>vault_run</code>; the value comes back as <code>[REDACTED]</code>.</p></div>
+      <div class="rec rv d2"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg></div><span class="tag tag-ok">verified</span><h3>Access audit log</h3><p>Every access to a secret is recorded. <em>Tamper-evident HMAC chaining is under audit.</em></p></div>
+      <div class="rec rv"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10M8 3l-2 18M18 3l-2 18"/></svg></div><span class="tag tag-wip">under audit</span><h3>Output sanitization</h3><p>Filters the value and its encoded variants from returned output. Implemented; effectiveness being independently verified.</p></div>
+      <div class="rec rv d1"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/></svg></div><span class="tag tag-wip">under audit</span><h3>Canary secrets</h3><p>Decoy credentials meant to flag exfiltration attempts. Implemented; not yet proven effective.</p></div>
+      <div class="rec rv d2"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div><span class="tag tag-wip">planned</span><h3>Hardware backing</h3><p>Planned: Secure Enclave, TPM 2.0, and FIDO2 as an extra layer where available.</p></div>
     </div>
   </div>
 </section>
