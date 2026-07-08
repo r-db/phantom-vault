@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/r-db/phantom-vault/main/install.sh | bash
 #
 # Or pin to a version:
-#   curl -fsSL https://raw.githubusercontent.com/r-db/phantom-vault/main/install.sh | PHANTOM_VERSION=v1.5.0 bash
+#   curl -fsSL https://raw.githubusercontent.com/r-db/phantom-vault/main/install.sh | PHANTOM_VERSION=v0.1.0 bash
 #
 # Installs both `phantom` and `vault-mcp` to /usr/local/bin (with sudo if
 # needed) or to ~/.local/bin (no sudo, must already be on PATH).

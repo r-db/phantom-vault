@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "MCP server binary that launches the safe phantom-vault scheme (analyzer -> egress-jailed sandbox -> sanitizer)"
 authors = ["Vault Secrets Team"]
-license = "MIT"
+license = "Apache-2.0"
 
 [[bin]]
 name = "vault-mcp"
